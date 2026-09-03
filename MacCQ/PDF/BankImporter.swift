@@ -51,19 +51,51 @@ enum BankImporter {
 
         switch url.pathExtension.lowercased() {
         case "pdf":
-            guard let doc = PDFDocument(url: url) else { throw ImportError.cannotRead }
-            var text = ""
-            for i in 0..<doc.pageCount {
-                if let s = doc.page(at: i)?.string {
-                    text += s + "\n"
-                }
-            }
-            return text
+            return try pdfToText(from: url)
         case "txt", "text", "md":
             return try String(contentsOf: url, encoding: .utf8)
         default:
             throw ImportError.unsupportedFormat(url.pathExtension)
         }
+    }
+
+    /// PDF → 中间 TXT：逐页按「真实阅读顺序」提取文本并清洗，
+    /// 先写入临时 .txt 再读取解析，避免「题目选项跨页」导致选项丢失、答案越界或题目无法识别。
+    static func pdfToText(from url: URL) throws -> String {
+        guard let doc = PDFDocument(url: url) else { throw ImportError.cannotRead }
+        var pages = ""
+        for i in 0..<doc.pageCount {
+            if let page = doc.page(at: i) {
+                pages += readingOrderText(for: page) + "\n"
+            }
+        }
+        let cleaned = QuestionParser.cleanPDFText(pages)
+
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacCQ-\(UUID().uuidString).txt")
+        try cleaned.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        return try String(contentsOf: tmp, encoding: .utf8)
+    }
+
+    /// PDFKit 的 `page.string` 在跨页/特殊版式下会把某些行读错顺序（例如把答案行
+    /// 放到题干之前）。这里逐行取出文本与其几何位置，按「从上到下、从左到右」重新排序，
+    /// 得到与视觉一致的阅读顺序。
+    private static func readingOrderText(for page: PDFPage) -> String {
+        guard let selection = page.selection(for: page.bounds(for: .mediaBox)) else {
+            return page.string ?? ""
+        }
+        let lines = selection.selectionsByLine()
+        var items: [(y: CGFloat, x: CGFloat, text: String)] = []
+        for line in lines {
+            let text = line.string ?? ""
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let bounds = line.bounds(for: page)
+            items.append((bounds.maxY, bounds.minX, text))
+        }
+        // PDF 坐标系原点在左下角：y 越大越靠上（先读），x 越小越靠左。
+        items.sort { $0.y != $1.y ? $0.y > $1.y : $0.x < $1.x }
+        return items.map { $0.text }.joined(separator: "\n")
     }
 
     /// 从文件导入题库，level 由调用方指定

@@ -70,6 +70,8 @@ struct MainView: View {
             .navigationSplitViewColumnWidth(min: 210, ideal: 240)
             .tint(MacDesign.accentTint)
         }
+        .glassEffect(.regular, in: .rect(cornerRadius: 18))
+        .padding(10)
     }
 
     private var sidebarHeader: some View {

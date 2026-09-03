@@ -91,24 +91,24 @@ struct QuestionCardView: View {
 
     private func rowBackground(isSelected: Bool, correct: Bool, wrong: Bool) -> some View {
         RoundedRectangle(cornerRadius: 13)
-            .fill(rowFill(isSelected: isSelected, correct: correct, wrong: wrong))
+            .glassEffect(.regular.interactive().tint(rowTint(isSelected: isSelected, correct: correct, wrong: wrong)), in: .rect(cornerRadius: 13))
             .overlay(
                 RoundedRectangle(cornerRadius: 13)
                     .strokeBorder(rowBorder(isSelected: isSelected, correct: correct, wrong: wrong), lineWidth: 1))
     }
 
-    private func rowFill(isSelected: Bool, correct: Bool, wrong: Bool) -> Color {
-        if correct { return Color.green.opacity(0.16) }
-        if wrong { return Color.red.opacity(0.16) }
-        if isSelected { return Color.blue.opacity(0.14) }
-        return Color.white.opacity(0.22)
+    private func rowTint(isSelected: Bool, correct: Bool, wrong: Bool) -> Color? {
+        if correct { return Color.green.opacity(0.30) }
+        if wrong { return Color.red.opacity(0.30) }
+        if isSelected { return MacDesign.accentTint.opacity(0.28) }
+        return nil
     }
 
     private func rowBorder(isSelected: Bool, correct: Bool, wrong: Bool) -> Color {
         if correct { return Color.green.opacity(0.55) }
         if wrong { return Color.red.opacity(0.55) }
         if isSelected { return MacDesign.accentTint.opacity(0.6) }
-        return Color.white.opacity(0.4)
+        return MacDesign.glassBorder
     }
 
     private func letterFill(isSelected: Bool, correct: Bool, wrong: Bool) -> Color {

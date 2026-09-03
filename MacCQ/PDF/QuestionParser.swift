@@ -22,7 +22,7 @@ struct ParsedQuestion {
 enum QuestionParser {
 
     static func parse(text: String) -> [ParsedQuestion] {
-        let lines = normalize(text)
+        let lines = normalizedLines(text)
         // 带标签格式检测
         if lines.contains(where: { $0.hasPrefix("[Q]") }) {
             return parseTagged(lines)
@@ -30,53 +30,57 @@ enum QuestionParser {
         return parseCommon(lines)
     }
 
+    /// PDF 提取文本的清洗：规范换行，并把一行内挤在一起的多个选项拆成独立行，
+    /// 避免「题目选项跨页 / 同页不换行」时选项被合并丢失。
+    static func cleanPDFText(_ text: String) -> String {
+        normalizedLines(text).joined(separator: "\n")
+    }
+
+    private static func normalizedLines(_ text: String) -> [String] {
+        expandMultiOptionLines(normalize(text))
+    }
+
     // MARK: - 带标签格式
 
     private static func parseTagged(_ lines: [String]) -> [ParsedQuestion] {
-        var result: [ParsedQuestion] = []
-        var stem = ""
-        var options: [String] = []
-        var answer: [String] = []
-        var started = false
+        let lines = normalizeTaggedOrder(lines)
 
-        func finalize() {
-            let cleanStem = stem.trimmingCharacters(in: .whitespacesAndNewlines)
-            let hasValid = started && !cleanStem.isEmpty && options.count >= 2 && !answer.isEmpty
-            if hasValid {
-                let type: QuestionType = answer.count > 1 ? .multi : .single
-                result.append(ParsedQuestion(type: type, stem: cleanStem,
-                                             options: options, correctLetters: answer))
-            }
-            stem = ""; options = []; answer = []; started = false
-        }
+        // 按 [Q] 边界把文本切成「每道题」的片段，片段内顺序无关地收集 [T]/[A-H]，
+        // 这样即便 PDF 提取把答案提前/延后、选项被打散，也能尽量归集到同一题。
+        var regions: [(stem: String, options: [String], answer: [String])] = []
+        var cur: (stem: String, options: [String], answer: [String]) = ("", [], [])
+        var started = false
 
         for line in lines {
             if line.isEmpty { continue }
             if line.hasPrefix("[Q]") {
-                finalize()
+                if started { regions.append(cur) }
                 started = true
-                stem = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                cur = (String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces), [], [])
                 continue
             }
+            guard started else { continue }
             if line.hasPrefix("[T]") {
-                answer = lettersIn(String(line.dropFirst(3)))
-                continue
-            }
-            if taggedOptionLetter(line) != nil {
+                cur.answer = lettersIn(String(line.dropFirst(3)))
+            } else if taggedOptionLetter(line) != nil {
                 let idx = line.range(of: "]")?.upperBound ?? line.startIndex
-                let rest = String(line[idx...])
-                options.append(rest.trimmingCharacters(in: .whitespaces))
+                cur.options.append(String(line[idx...]).trimmingCharacters(in: .whitespaces))
+            } else if line.hasPrefix("[J]") || line.hasPrefix("[P]") || line.hasPrefix("[I]") {
                 continue
+            } else {
+                cur.stem += (cur.stem.isEmpty ? "" : " ") + line
             }
-            // 元数据行直接忽略
-            if line.hasPrefix("[J]") || line.hasPrefix("[P]") || line.hasPrefix("[I]") { continue }
-            // 题干续行
-            // PDF text extraction often wraps one sentence across lines. Join
-            // continuation lines with a space so punctuation is not stranded
-            // at the start of a new rendered line.
-            if started { stem += (stem.isEmpty ? "" : " ") + line }
         }
-        finalize()
+        if started { regions.append(cur) }
+
+        var result: [ParsedQuestion] = []
+        for r in regions {
+            let cleanStem = r.stem.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanStem.isEmpty, r.options.count >= 2, !r.answer.isEmpty else { continue }
+            let type: QuestionType = r.answer.count > 1 ? .multi : .single
+            result.append(ParsedQuestion(type: type, stem: cleanStem,
+                                         options: r.options, correctLetters: r.answer))
+        }
         return result
     }
 
@@ -86,6 +90,30 @@ enum QuestionParser {
         guard let re = try? NSRegularExpression(pattern: pattern),
               let result = match(re, in: line) else { return nil }
         return capture(result, at: 1, in: line)
+    }
+
+    /// PDF 文本提取可能把 `[T]` 答案行读取到它所属 `[Q]` 之前（跨页/阅读顺序抖动），
+    /// 导致答案被归给上一题、本题目被跳过。这里把紧跟 `[Q]` 之后的答案重新归位到该题。
+    private static func normalizeTaggedOrder(_ lines: [String]) -> [String] {
+        var out: [String] = []
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            if line.hasPrefix("[T]") {
+                var j = i + 1
+                while j < lines.count && lines[j].isEmpty { j += 1 }
+                if j < lines.count && lines[j].hasPrefix("[Q]") {
+                    // 该答案属于紧随其后的 [Q]，把 [T] 移到 [Q] 之后
+                    out.append(lines[j])
+                    out.append(line)
+                    i = j + 1
+                    continue
+                }
+            }
+            out.append(line)
+            i += 1
+        }
+        return out
     }
 
     /// 提取字符串中出现的大写字母 A-H（去掉其它字符）
@@ -135,6 +163,31 @@ enum QuestionParser {
                 $0.replacingOccurrences(of: "\u{200B}", with: "")
                     .trimmingCharacters(in: .whitespaces)
             }
+    }
+
+    /// 若一行内包含多个选项标记（如「A．xx B．yy」），拆分为每行一个选项，
+    /// 仅在行首即为选项标记且存在 ≥2 个标记时拆分，避免误拆题干。
+    private static func expandMultiOptionLines(_ lines: [String]) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: #"\(?([A-H])\)?\s*[、．.，,：:]"#) else { return lines }
+        var out: [String] = []
+        for line in lines {
+            let ns = NSRange(line.startIndex..., in: line)
+            let matches = re.matches(in: line, options: [], range: ns)
+            guard matches.count >= 2, matches[0].range.location == 0 else {
+                out.append(line)
+                continue
+            }
+            for i in matches.indices {
+                guard let start = Range(matches[i].range, in: line) else { continue }
+                let end = i + 1 < matches.count
+                    ? (Range(matches[i + 1].range, in: line)?.lowerBound ?? line.endIndex)
+                    : line.endIndex
+                let piece = String(line[start.lowerBound..<end])
+                    .trimmingCharacters(in: .whitespaces)
+                if !piece.isEmpty { out.append(piece) }
+            }
+        }
+        return out
     }
 
     // MARK: - 内部构建器

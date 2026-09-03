@@ -14,7 +14,9 @@ struct AIView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var referenced: Question?
-    @State private var bankByLevel: [String: [Question]] = [:]
+    @State private var allBank: [Question] = []
+    @State private var showReferPicker = false
+    @State private var referSearch = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -77,15 +79,14 @@ struct AIView: View {
     private func bubble(_ m: ChatMessage) -> some View {
         HStack {
             if m.role == "user" { Spacer(minLength: 60) }
-            Text(m.content)
+            Text(safeMarkdownText(m.content))
                 .font(.system(.body, design: .rounded))
                 .textSelection(.enabled)
                 .padding(12)
-                .background(m.role == "user" ? Color.blue.opacity(0.2) : Color.white.opacity(0.15))
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .glassEffect(m.role == "user" ? .regular.tint(.blue.opacity(0.6)) : .regular, in: .rect(cornerRadius: 14))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(.white.opacity(0.35), lineWidth: 0.5))
+                        .strokeBorder(MacDesign.glassBorder, lineWidth: 0.5))
                 .frame(maxWidth: .infinity, alignment: m.role == "user" ? .trailing : .leading)
             if m.role != "user" { Spacer(minLength: 60) }
         }
@@ -129,27 +130,22 @@ struct AIView: View {
                 .tint(MacDesign.accentTint)
                 .disabled(isLoading || input.trimmingCharacters(in: .whitespaces).isEmpty)
 
-                Menu {
-                    ForEach(Level.allCases) { l in
-                        Menu(l.name) {
-                            let qs = bankByLevel[l.rawValue] ?? []
-                            if qs.isEmpty {
-                                Text("暂无题目")
-                            } else {
-                                ForEach(qs, id: \.id) { q in
-                                    Button("第 \(q.bankOrder) 题：\(q.stem.prefix(12))…") {
-                                        referenced = q
-                                    }
-                                }
-                            }
-                        }
-                    }
+                Button {
+                    referSearch = ""
+                    loadBank()
+                    showReferPicker = true
                 } label: {
                     Label("引用", systemImage: "quote.bubble")
                 }
-                .menuStyle(.button)
-                .fixedSize()
+                .buttonStyle(.glass)
                 .disabled(isLoading)
+                .popover(isPresented: $showReferPicker, arrowEdge: .bottom) {
+                    QuestionPicker(search: $referSearch, questions: filteredQuestions) { q in
+                        referenced = q
+                        showReferPicker = false
+                        referSearch = ""
+                    }
+                }
             }
             .padding(10)
             .glassPill(cornerRadius: 14)
@@ -186,10 +182,96 @@ struct AIView: View {
         }
     }
 
+    private var filteredQuestions: [Question] {
+        let s = referSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty { return allBank }
+        return allBank.filter {
+            $0.stem.localizedCaseInsensitiveContains(s)
+                || $0.options.contains { $0.localizedCaseInsensitiveContains(s) }
+        }
+    }
+
     private func loadBank() {
-        let all = DatabaseManager.shared.loadAllQuestions()
-        var grouped: [String: [Question]] = [:]
-        for q in all { grouped[q.level, default: []].append(q) }
-        bankByLevel = grouped
+        allBank = DatabaseManager.shared.loadAllQuestions()
+    }
+}
+
+/// 引用题目的搜索选择面板
+private struct QuestionPicker: View {
+    @Binding var search: String
+    let questions: [Question]
+    let onSelect: (Question) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("搜索题干或选项…", text: $search)
+                    .textFieldStyle(.plain)
+                if !search.isEmpty {
+                    Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                        .buttonStyle(.plain)
+                }
+            }
+            .padding(10)
+
+            Divider()
+
+            if questions.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "tray")
+                        .font(.system(size: 30))
+                        .foregroundStyle(.secondary)
+                    Text(search.isEmpty ? "暂无题目，请先在【导入题库】中导入" : "没有匹配的题目")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(questions) { q in
+                            Button {
+                                onSelect(q)
+                            } label: {
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text(q.level)
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.white)
+                                        .frame(width: 22, height: 22)
+                                        .background(levelColor(q.level), in: RoundedRectangle(cornerRadius: 6))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("第 \(q.bankOrder) 题 · \(q.type.shortLabel)")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                        Text(q.stem)
+                                            .font(.callout)
+                                            .multilineTextAlignment(.leading)
+                                            .lineLimit(2)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.vertical, 6)
+                                .padding(.horizontal, 10)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .frame(width: 400, height: 440)
+    }
+
+    private func levelColor(_ level: String) -> Color {
+        switch level {
+        case "A": return Color.blue
+        case "B": return Color.teal
+        case "C": return Color.purple
+        default: return Color.gray
+        }
     }
 }

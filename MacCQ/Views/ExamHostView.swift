@@ -173,7 +173,7 @@ struct ExamHostView: View {
     private func cellColor(answered: Bool, current: Bool) -> Color {
         if current { return MacDesign.accentTint.opacity(0.85) }
         if answered { return Color.green.opacity(0.65) }
-        return Color.white.opacity(0.35)
+        return MacDesign.subtleFill
     }
 
     private func binding(for index: Int) -> Binding<Set<Int>> {
