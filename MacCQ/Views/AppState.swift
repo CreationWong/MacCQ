@@ -16,6 +16,9 @@ final class AppState {
     var records: [ExamRecord] = []
     var aiConfig: AIConfig = AIConfig()
     var lastImport: ImportReport?
+    var wrongQuestionIds: [Int64] = []
+    var favoriteQuestionIds: [Int64] = []
+    var notes: [Int64: String] = [:]
 
     init() {
         refresh()
@@ -25,6 +28,9 @@ final class AppState {
         counts = DatabaseManager.shared.countByLevel()
         records = DatabaseManager.shared.loadRecords()
         aiConfig = DatabaseManager.shared.loadAIConfig()
+        wrongQuestionIds = DatabaseManager.shared.loadMarkedIds(kind: "wrong")
+        favoriteQuestionIds = DatabaseManager.shared.loadMarkedIds(kind: "favorite")
+        notes = DatabaseManager.shared.loadNotes()
     }
 
     func count(for level: Level) -> Int {
@@ -34,17 +40,20 @@ final class AppState {
     @discardableResult
     func importBank(url: URL, level: Level) throws -> ImportReport {
         let report = try BankImporter.importBank(from: url, level: level.rawValue)
-        _ = try DatabaseManager.shared.replaceQuestions(report.questions, level: level.rawValue)
+        // 没有识别到任何题目时不替换原题库，避免误选文件清空已有题目。
+        if !report.questions.isEmpty {
+            _ = try DatabaseManager.shared.replaceQuestions(report.questions, level: level.rawValue)
+        }
         lastImport = report
         refresh()
         return report
     }
 
-    func recordFinished(level: Level, mode: String, total: Int, correct: Int, duration: Int) {
+    func recordFinished(level: Level, mode: String, total: Int, correct: Int, duration: Int, weakTopics: [String] = []) {
         let passed = mode == "exam" ? level.passed(correctCount: correct) : true
         let rec = ExamRecord(id: 0, level: level.rawValue, mode: mode, date: Date(),
                              total: total, correct: correct, passed: passed,
-                             durationSeconds: duration)
+                             durationSeconds: duration, weakTopics: weakTopics)
         DatabaseManager.shared.saveRecord(rec)
         refresh()
     }
@@ -53,6 +62,65 @@ final class AppState {
         DatabaseManager.shared.saveAIConfig(config)
         aiConfig = config
     }
+
+    // MARK: - 错题与收藏
+
+    func addWrongQuestion(_ id: Int64) {
+        guard id > 0, !wrongQuestionIds.contains(id) else { return }
+        DatabaseManager.shared.addMark(questionId: id, kind: "wrong")
+        wrongQuestionIds.insert(id, at: 0)
+    }
+
+    func removeWrongQuestion(_ id: Int64) {
+        DatabaseManager.shared.removeMark(questionId: id, kind: "wrong")
+        wrongQuestionIds.removeAll { $0 == id }
+    }
+
+    func clearWrongQuestions() {
+        DatabaseManager.shared.clearMarks(kind: "wrong")
+        wrongQuestionIds = []
+    }
+
+    func clearFavorites() {
+        DatabaseManager.shared.clearMarks(kind: "favorite")
+        favoriteQuestionIds = []
+    }
+
+    func isFavorite(_ id: Int64) -> Bool {
+        favoriteQuestionIds.contains(id)
+    }
+
+    func toggleFavorite(_ id: Int64) {
+        guard id > 0 else { return }
+        if favoriteQuestionIds.contains(id) {
+            DatabaseManager.shared.removeMark(questionId: id, kind: "favorite")
+            favoriteQuestionIds.removeAll { $0 == id }
+        } else {
+            DatabaseManager.shared.addMark(questionId: id, kind: "favorite")
+            favoriteQuestionIds.insert(id, at: 0)
+        }
+    }
+
+    // MARK: - 题目勘误
+
+    func note(for id: Int64) -> String? {
+        notes[id]
+    }
+
+    func saveNote(_ note: String, for id: Int64) {
+        DatabaseManager.shared.saveNote(questionId: id, note: note)
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            notes[id] = nil
+        } else {
+            notes[id] = trimmed
+        }
+    }
+
+    /// 按 ID 顺序加载错题/收藏题目
+    func loadQuestions(ids: [Int64]) -> [Question] {
+        DatabaseManager.shared.loadQuestions(ids: ids)
+    }
 }
 
 /// 侧边栏导航路由
@@ -60,6 +128,7 @@ enum Route: Hashable, Identifiable {
     case importBank
     case practice(Level)
     case exam(Level)
+    case notebook
     case records
     case ai
     case settings
@@ -69,6 +138,7 @@ enum Route: Hashable, Identifiable {
         case .importBank: return "import"
         case .practice(let l): return "practice-\(l.rawValue)"
         case .exam(let l): return "exam-\(l.rawValue)"
+        case .notebook: return "notebook"
         case .records: return "records"
         case .ai: return "ai"
         case .settings: return "settings"

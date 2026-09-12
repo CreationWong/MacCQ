@@ -7,7 +7,7 @@
 
 import Foundation
 
-/// 操作证级别 A、B、C，C 最高
+/// 业余无线电台操作技术能力类别 A、B、C，C 最高
 enum Level: String, CaseIterable, Codable, Identifiable {
     case a = "A"
     case b = "B"
@@ -15,15 +15,16 @@ enum Level: String, CaseIterable, Codable, Identifiable {
 
     var id: String { rawValue }
 
-    var name: String { "\(rawValue)类操作技术能力" }
+    var name: String { "\(rawValue) 类业余无线电操作证" }
 
-    var shortName: String { "\(rawValue)类" }
+    var shortName: String { "\(rawValue) 类" }
 
+    /// 各类别验证试卷题数（依据中国无线电协会业余无线电分会考核标准）
     var questionCount: Int {
         switch self {
-        case .a: return 30
-        case .b: return 50
-        case .c: return 80
+        case .a: return 40
+        case .b: return 60
+        case .c: return 90
         }
     }
 
@@ -39,9 +40,9 @@ enum Level: String, CaseIterable, Codable, Identifiable {
 
     var passCount: Int {
         switch self {
-        case .a: return 25
-        case .b: return 40
-        case .c: return 60
+        case .a: return 30
+        case .b: return 45
+        case .c: return 70
         }
     }
 

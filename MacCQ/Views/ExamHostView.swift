@@ -2,8 +2,6 @@
 //  ExamHostView.swift
 //  MacCQ
 //
-//  Created by CreationWong on 2026/9/2.
-//
 
 import SwiftUI
 import Combine
@@ -38,12 +36,13 @@ struct ExamHostView: View {
                 }
             }
         }
+        .pageBackground()
         .navigationTitle("模拟考试 · \(level.name)")
-        .frame(minWidth: 620, minHeight: 540)
+        .frame(minWidth: 620, minHeight: 560)
         .onReceive(timer) { _ in onTick() }
-        .confirmationDialog("交卷", isPresented: $showSubmitConfirm, titleVisibility: .visible) {
+        .confirmationDialog("确定要交卷吗？", isPresented: $showSubmitConfirm, titleVisibility: .visible) {
             Button("确定交卷") { submit() }
-            Button("取消", role: .cancel) {}
+            Button("继续答题", role: .cancel) {}
         } message: {
             Text(submitMessage)
         }
@@ -52,48 +51,57 @@ struct ExamHostView: View {
     // MARK: - 开始页
 
     private var setupView: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "doc.text.fill")
-                .font(.system(size: 46))
-                .foregroundStyle(.blue)
-            Text(level.name)
-                .font(.largeTitle.bold())
-            VStack(spacing: 6) {
-                ruleRow("题目数量", "\(level.questionCount) 题")
-                ruleRow("考试时长", "\(level.timeMinutes) 分钟")
-                ruleRow("及格标准", "答对 \(level.passCount) 题（含）以上")
-                ruleRow("当前题库", "\(appState.count(for: level)) 题")
-            }
-            .padding(.vertical)
-            .frame(maxWidth: 360)
-            .glassCard(cornerRadius: 20)
-            .padding(.horizontal, 24)
+        ScrollView {
+            VStack(spacing: 26) {
+                VStack(spacing: 8) {
+                    Tag(text: level.shortName)
+                    Text("模拟考试")
+                        .font(Theme.pageTitle)
+                    Text("请在规定时间内完成答题，交卷后可查看成绩与错题。")
+                        .font(Theme.body)
+                        .foregroundStyle(.secondary)
+                }
 
-            Button {
-                startExam()
-            } label: {
-                Text(appState.count(for: level) == 0 ? "题库为空，请先导入" : "开始考试")
-                    .font(.system(.headline, design: .rounded))
-                    .frame(minWidth: 180)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(MacDesign.accentTint)
-            .disabled(appState.count(for: level) == 0)
+                VStack(spacing: 0) {
+                    ruleRow("题目数量", "\(level.questionCount) 题")
+                    Divider().overlay(Theme.separator)
+                    ruleRow("考试时长", "\(level.timeMinutes) 分钟")
+                    Divider().overlay(Theme.separator)
+                    ruleRow("合格标准", "答对 \(level.passCount) 题及以上")
+                    Divider().overlay(Theme.separator)
+                    ruleRow("当前题库", "\(appState.count(for: level)) 题")
+                }
+                .card(padding: 0)
+                .frame(maxWidth: 380)
 
-            Text("题目按题库顺序抽取，选项位置已打乱。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Button {
+                    startExam()
+                } label: {
+                    Text(appState.count(for: level) == 0 ? "请先导入题库" : "开始考试")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PrimaryActionButton())
+                .frame(maxWidth: 320)
+                .disabled(appState.count(for: level) == 0)
+
+                Text("题目按题库顺序抽取，选项顺序每次随机打乱。")
+                    .font(Theme.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(40)
         }
-        .padding(40)
     }
 
     private func ruleRow(_ label: String, _ value: String) -> some View {
         HStack {
             Text(label).foregroundStyle(.secondary)
             Spacer()
-            Text(value).fontWeight(.semibold)
+            Text(value).font(Theme.font(14, .semibold))
         }
-        .padding(.horizontal, 8)
+        .font(Theme.body)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
     }
 
     // MARK: - 答题页
@@ -101,46 +109,52 @@ struct ExamHostView: View {
     private var runningView: some View {
         VStack(spacing: 0) {
             examHeader
-            Divider()
+            Divider().overlay(Theme.separator)
             if !paper.isEmpty {
                 ScrollView {
                     QuestionCardView(question: paper[currentIndex], revealed: false, selection: binding(for: currentIndex))
                         .frame(maxWidth: 720)
                         .frame(maxWidth: .infinity)
-                        .padding(24)
+                        .padding(28)
                 }
             }
+            Divider().overlay(Theme.separator)
             examFooter
         }
     }
 
     private var examHeader: some View {
         HStack {
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text("第 \(currentIndex + 1) / \(paper.count) 题")
-                    .font(.headline)
+                    .font(Theme.cardTitle)
                 if paper.indices.contains(currentIndex) {
                     Text(paper[currentIndex].type.label)
-                        .font(.caption)
+                        .font(Theme.caption)
                         .foregroundStyle(.secondary)
                 }
             }
             Spacer()
-            Label(timeText(remaining), systemImage: "timer")
-                .font(.system(.title3, design: .rounded, weight: .semibold))
-                .foregroundStyle(remaining <= 60 ? .red : .primary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .glassPill(cornerRadius: 20)
+            HStack(spacing: 6) {
+                Image(systemName: "timer")
+                Text(timeText(remaining))
+                    .font(Theme.mono)
+            }
+            .foregroundStyle(remaining <= 60 ? Theme.danger : .primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                remaining <= 60 ? Theme.danger.opacity(0.10) : Theme.surfaceMuted,
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             Button("交卷") { showSubmitConfirm = true }
-                .buttonStyle(.borderedProminent)
-                .tint(MacDesign.accentTint)
+                .buttonStyle(PrimaryActionButton())
         }
-        .padding()
+        .padding(.horizontal, 24)
+        .padding(.vertical, 14)
     }
 
     private var examFooter: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(paper.indices, id: \.self) { i in
@@ -149,31 +163,53 @@ struct ExamHostView: View {
                             currentIndex = i
                         } label: {
                             Text("\(i + 1)")
-                                .font(.system(.caption, design: .rounded, weight: .medium))
+                                .font(Theme.font(12, .medium))
                                 .frame(width: 30, height: 30)
-                                .background(cellColor(answered: answered, current: i == currentIndex), in: Circle())
+                                .background(
+                                    cellBackground(answered: answered, current: i == currentIndex),
+                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .foregroundStyle(cellForeground(answered: answered, current: i == currentIndex))
                         }
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, 24)
+                .padding(.top, 14)
             }
             HStack {
-                Button { move(-1) } label: { Label("上一题", systemImage: "chevron.left") }
-                    .disabled(currentIndex == 0)
+                Button {
+                    move(-1)
+                } label: {
+                    Label("上一题", systemImage: "chevron.left")
+                }
+                .buttonStyle(SecondaryActionButton())
+                .disabled(currentIndex == 0)
+
                 Spacer()
-                Button { move(1) } label: { Label("下一题", systemImage: "chevron.right") }
-                    .disabled(currentIndex == paper.count - 1)
+
+                Button {
+                    move(1)
+                } label: {
+                    Label("下一题", systemImage: "chevron.right")
+                }
+                .buttonStyle(SecondaryActionButton())
+                .disabled(currentIndex == paper.count - 1)
             }
-            .padding(.horizontal)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 14)
         }
     }
 
-    private func cellColor(answered: Bool, current: Bool) -> Color {
-        if current { return MacDesign.accentTint.opacity(0.85) }
-        if answered { return Color.green.opacity(0.65) }
-        return MacDesign.subtleFill
+    private func cellBackground(answered: Bool, current: Bool) -> Color {
+        if current { return Theme.accent }
+        if answered { return Theme.success.opacity(0.14) }
+        return Theme.surfaceMuted
+    }
+
+    private func cellForeground(answered: Bool, current: Bool) -> Color {
+        if current { return .white }
+        if answered { return Theme.success }
+        return .secondary
     }
 
     private func binding(for index: Int) -> Binding<Set<Int>> {
@@ -203,8 +239,13 @@ struct ExamHostView: View {
     private func submit() {
         let (correct, wrong) = ExamEngine.gradePaper(exam: paper, answers: answers)
         result = (correct, wrong)
+        for i in wrong {
+            appState.addWrongQuestion(paper[i].id)
+        }
+        let weakTopics = StudyAnalyzer.analyze(paper: paper, answers: answers).weakTopics.map(\.title)
         appState.recordFinished(level: level, mode: "exam", total: paper.count,
-                                correct: correct, duration: level.timeSeconds - max(0, remaining))
+                                correct: correct, duration: level.timeSeconds - max(0, remaining),
+                                weakTopics: weakTopics)
         phase = .finished
     }
 
@@ -220,6 +261,6 @@ struct ExamHostView: View {
 
     private var submitMessage: String {
         let unanswered = paper.indices.filter { answers[$0]?.isEmpty ?? true }.count
-        return unanswered > 0 ? "还有 \(unanswered) 题未作答，确定交卷吗？" : "确定交卷吗？"
+        return unanswered > 0 ? "还有 \(unanswered) 题未作答。" : "所有题目都已作答。"
     }
 }

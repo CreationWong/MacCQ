@@ -8,9 +8,18 @@
 import Foundation
 import PDFKit
 
-enum ImportError: Error {
+enum ImportError: LocalizedError {
     case cannotRead
     case unsupportedFormat(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .cannotRead:
+            return "无法读取这个文件，请确认文件没有损坏或加密。"
+        case .unsupportedFormat(let ext):
+            return "暂不支持 .\(ext) 格式，请选择 PDF 或 TXT 文件。"
+        }
+    }
 }
 
 struct ImportReport {
@@ -136,12 +145,12 @@ enum BankImporter {
                 dropped += 1
                 let reason: String
                 if p.options.count < 2 {
-                    reason = "选项不足（至少需要 2 个选项）"
+                    reason = "选项少于两个"
                 } else if hasOutOfRangeAnswer {
-                    reason = "正确答案超出选项范围"
+                    reason = "答案与选项不匹配"
                 } else if correct.isEmpty {
-                    reason = "未识别到正确答案"
-                } else { reason = "无法验证正确答案" }
+                    reason = "没有识别到答案"
+                } else { reason = "答案无法确认" }
                 unresolved.append(UnresolvedQuestion(id: i, number: i + 1,
                                                      stem: p.stem,
                                                      options: p.options,

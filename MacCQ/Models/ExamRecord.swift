@@ -17,6 +17,7 @@ struct ExamRecord: Codable, Identifiable {
     var correct: Int         // 答对题数
     var passed: Bool         // 是否合格（练习模式可为空/always true）
     var durationSeconds: Int // 用时
+    var weakTopics: [String] = [] // 本次考试的薄弱知识主题
 
     var levelEnum: Level? { Level(rawValue: level) }
     var isExam: Bool { mode == "exam" }

@@ -8,7 +8,6 @@
 import Foundation
 
 /// 数据库管理器：负责题库、考试记录与 AI 配置的读写。
-/// 与 App 内保留的 SwiftData 并行存在、互不干扰。
 @MainActor
 final class DatabaseManager {
     static let shared = DatabaseManager()
@@ -73,7 +72,22 @@ final class DatabaseManager {
             key TEXT PRIMARY KEY,
             value TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS question_marks (
+            question_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            marked_at REAL NOT NULL,
+            PRIMARY KEY (question_id, kind)
+        );
+
+        CREATE TABLE IF NOT EXISTS question_notes (
+            question_id INTEGER PRIMARY KEY,
+            note TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        );
         """)
+        // 旧版本数据库升级：为考试记录补充薄弱主题列（列已存在时会报错，忽略即可）
+        try? db.exec("ALTER TABLE exam_records ADD COLUMN topics TEXT")
     }
 
     // MARK: - 题库
@@ -192,13 +206,101 @@ final class DatabaseManager {
             importedAt: Date(timeIntervalSince1970: stmt.double(7)))
     }
 
+    /// 按给定 ID 顺序加载题目（用于错题本与收藏）
+    func loadQuestions(ids: [Int64]) -> [Question] {
+        guard let db, !ids.isEmpty else { return [] }
+        let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+        var byId: [Int64: Question] = [:]
+        do {
+            let stmt = try db.query(
+                "SELECT id, level, qtype, stem, options, correct, bank_order, imported_at FROM questions WHERE id IN (\(placeholders))",
+                params: ids.map { $0 })
+            defer { stmt.close() }
+            while try stmt.step() {
+                if var q = question(from: stmt) {
+                    q.id = stmt.int64(0)
+                    byId[q.id] = q
+                }
+            }
+        } catch { }
+        return ids.compactMap { byId[$0] }
+    }
+
+    // MARK: - 错题与收藏
+
+    /// 添加标记（错题 / 收藏），重复添加只更新时间
+    func addMark(questionId: Int64, kind: String) {
+        guard let db, questionId > 0 else { return }
+        try? db.run("""
+        INSERT INTO question_marks (question_id, kind, marked_at) VALUES (?, ?, ?)
+        ON CONFLICT(question_id, kind) DO UPDATE SET marked_at = excluded.marked_at
+        """, params: [questionId, kind, Date().timeIntervalSince1970])
+    }
+
+    func removeMark(questionId: Int64, kind: String) {
+        guard let db else { return }
+        try? db.run("DELETE FROM question_marks WHERE question_id = ? AND kind = ?",
+                    params: [questionId, kind])
+    }
+
+    func clearMarks(kind: String) {
+        guard let db else { return }
+        try? db.run("DELETE FROM question_marks WHERE kind = ?", params: [kind])
+    }
+
+    /// 按标记时间倒序返回题目 ID
+    func loadMarkedIds(kind: String) -> [Int64] {
+        guard let db else { return [] }
+        var result: [Int64] = []
+        do {
+            let stmt = try db.query(
+                "SELECT question_id FROM question_marks WHERE kind = ? ORDER BY marked_at DESC",
+                params: [kind])
+            defer { stmt.close() }
+            while try stmt.step() {
+                result.append(stmt.int64(0))
+            }
+        } catch { }
+        return result
+    }
+
+    // MARK: - 题目勘误
+
+    func saveNote(questionId: Int64, note: String) {
+        guard let db else { return }
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            try? db.run("DELETE FROM question_notes WHERE question_id = ?", params: [questionId])
+        } else {
+            try? db.run("""
+            INSERT INTO question_notes (question_id, note, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(question_id) DO UPDATE SET note = excluded.note, updated_at = excluded.updated_at
+            """, params: [questionId, trimmed, Date().timeIntervalSince1970])
+        }
+    }
+
+    func loadNotes() -> [Int64: String] {
+        guard let db else { return [:] }
+        var result: [Int64: String] = [:]
+        do {
+            let stmt = try db.query("SELECT question_id, note FROM question_notes", params: [])
+            defer { stmt.close() }
+            while try stmt.step() {
+                result[stmt.int64(0)] = stmt.text(1)
+            }
+        } catch { }
+        return result
+    }
+
     // MARK: - 考试记录
 
     func saveRecord(_ record: ExamRecord) {
         guard let db else { return }
+        let topics = (try? JSONSerialization.data(withJSONObject: record.weakTopics))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         try? db.run("""
-        INSERT INTO exam_records (level, mode, date, total, correct, passed, duration)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO exam_records (level, mode, date, total, correct, passed, duration, topics)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, params: [
             record.level,
             record.mode,
@@ -207,6 +309,7 @@ final class DatabaseManager {
             record.correct,
             record.passed,
             record.durationSeconds,
+            topics,
         ])
     }
 
@@ -215,7 +318,7 @@ final class DatabaseManager {
         var result: [ExamRecord] = []
         do {
             let stmt = try db.query(
-                "SELECT id, level, mode, date, total, correct, passed, duration FROM exam_records ORDER BY date DESC",
+                "SELECT id, level, mode, date, total, correct, passed, duration, topics FROM exam_records ORDER BY date DESC",
                 params: [])
             defer { stmt.close() }
             while try stmt.step() {
@@ -227,9 +330,10 @@ final class DatabaseManager {
                 let correct = Int(stmt.int64(5))
                 let passed = stmt.int64(6) != 0
                 let duration = Int(stmt.int64(7))
+                let topics = (try? JSONSerialization.jsonObject(with: Data(stmt.text(8).utf8)) as? [String]) ?? []
                 result.append(ExamRecord(id: id, level: level, mode: mode, date: date,
                                          total: total, correct: correct, passed: passed,
-                                         durationSeconds: duration))
+                                         durationSeconds: duration, weakTopics: topics))
             }
         } catch { }
         return result

@@ -2,8 +2,6 @@
 //  MainView.swift
 //  MacCQ
 //
-//  Created by CreationWong on 2026/9/2.
-//
 
 import SwiftUI
 
@@ -18,16 +16,17 @@ struct MainView: View {
             NavigationStack {
                 detailView
             }
-            .background(MacDesign.background)
+            .background(Theme.canvas)
         }
-        .containerBackground(MacDesign.windowGradient, for: .window)
         .environment(appState)
-        .frame(minWidth: 980, minHeight: 640)
+        .tint(Theme.accent)
+        .frame(minWidth: 1000, minHeight: 660)
     }
 
     private var sidebar: some View {
         VStack(spacing: 0) {
             sidebarHeader
+            Divider().overlay(Theme.separator)
             List(selection: $route) {
                 Section {
                     NavigationItem(icon: "square.and.arrow.down", label: "导入题库")
@@ -38,7 +37,7 @@ struct MainView: View {
 
                 Section {
                     ForEach(Level.allCases) { level in
-                        NavigationItem(icon: "book", label: "\(level.name)")
+                        NavigationItem(icon: "book", label: level.shortName)
                             .tag(Route.practice(level))
                     }
                 } header: {
@@ -47,7 +46,7 @@ struct MainView: View {
 
                 Section {
                     ForEach(Level.allCases) { level in
-                        NavigationItem(icon: "doc.text", label: "\(level.name)")
+                        NavigationItem(icon: "doc.text", label: level.shortName)
                             .tag(Route.exam(level))
                     }
                 } header: {
@@ -55,42 +54,39 @@ struct MainView: View {
                 }
 
                 Section {
+                    NavigationItem(icon: "checklist", label: "错题本")
+                        .tag(Route.notebook)
                     NavigationItem(icon: "list.bullet.rectangle", label: "成绩记录")
                         .tag(Route.records)
-                    NavigationItem(icon: "bubble.left.and.bubble.right", label: "AI 答疑")
+                    NavigationItem(icon: "sparkles", label: "AI 助教")
                         .tag(Route.ai)
                     NavigationItem(icon: "gearshape", label: "设置")
                         .tag(Route.settings)
                 } header: {
-                    Text("记录与帮助")
+                    Text("其他")
                 }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
-            .navigationSplitViewColumnWidth(min: 210, ideal: 240)
-            .tint(MacDesign.accentTint)
         }
-        .glassEffect(.regular, in: .rect(cornerRadius: 18))
-        .padding(10)
+        .navigationSplitViewColumnWidth(min: 210, ideal: 232)
     }
 
     private var sidebarHeader: some View {
         HStack(spacing: 10) {
-            Image(systemName: "text.book.closed.fill")
-                .font(.title2)
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 34, height: 34)
-                .background(LinearGradient(colors: [Color.blue, Color.indigo], startPoint: .top, endPoint: .bottom), in: RoundedRectangle(cornerRadius: 9))
+                .frame(width: 30, height: 30)
+                .background(Theme.accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 1) {
-                Text("MacCQ").font(.system(.headline, design: .rounded, weight: .bold))
-                Text("操作资格练习与模拟")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Text("MacCQ").font(Theme.font(15, .bold))
+                Text("业余无线电操作证").font(Theme.caption).foregroundStyle(.secondary)
             }
             Spacer()
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 14)
     }
 
     @ViewBuilder
@@ -101,6 +97,7 @@ struct MainView: View {
         // cannot leak into another when navigating between A/B/C.
         case .practice(let level): PracticeView(level: level).id(level)
         case .exam(let level): ExamHostView(level: level).id(level)
+        case .notebook: NotebookView()
         case .records: RecordsView()
         case .ai: AIView()
         case .settings: SettingsView()
@@ -115,6 +112,5 @@ private struct NavigationItem: View {
 
     var body: some View {
         Label(label, systemImage: icon)
-            .font(.system(.body, design: .rounded))
     }
 }

@@ -2,61 +2,130 @@
 //  AIView.swift
 //  MacCQ
 //
-//  Created by CreationWong on 2026/9/2.
-//
 
 import SwiftUI
 
+/// 聊天中的一条消息，可能附带思考链/工具调用步骤，或 AI 通过工具创建的产物。
+private struct TutorMessage: Identifiable {
+    let id = UUID()
+    let role: String
+    let content: String
+    var apiContent: String?
+    var steps: [AgentStep] = []
+    var artifacts: [ChatArtifact] = []
+}
+
+/// 打开训练会话的请求
+private struct TrainingSessionRequest: Identifiable {
+    let id = UUID()
+    let artifacts: [ChatArtifact]
+}
+
 struct AIView: View {
+    private enum Mode: String, CaseIterable, Identifiable {
+        case chat = "智能答疑"
+        case training = "专项训练"
+        var id: String { rawValue }
+    }
+
     @Environment(AppState.self) private var appState
-    @State private var messages: [ChatMessage] = []
+    @State private var mode: Mode = .chat
+
+    // 答疑状态
+    @State private var messages: [TutorMessage] = []
     @State private var input = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
-    @State private var referenced: Question?
-    @State private var allBank: [Question] = []
+    @State private var referenced: [Question] = []
+    @State private var allBank: [Question] = DatabaseManager.shared.loadAllQuestions()
     @State private var showReferPicker = false
     @State private var referSearch = ""
+    @State private var referSelection: Set<Int64> = []
+
+    // 由 AI 工具创建的训练
+    @State private var session: TrainingSessionRequest?
 
     var body: some View {
+        Group {
+            if let session {
+                TrainingSessionView(artifacts: session.artifacts) {
+                    self.session = nil
+                }
+            } else {
+                normalContent
+            }
+        }
+        .pageBackground()
+        .navigationTitle("AI 助教")
+        .onAppear { loadBank() }
+    }
+
+    private var normalContent: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $mode) {
+                ForEach(Mode.allCases) { m in
+                    Text(m.rawValue).tag(m)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 320)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+
+            Divider().overlay(Theme.separator)
+
+            switch mode {
+            case .chat: chatView
+            case .training: TargetedTrainingView(showsCloseButton: false)
+            }
+        }
+    }
+
+    // MARK: - 答疑
+
+    private var chatView: some View {
         VStack(spacing: 0) {
             if !appState.aiConfig.isConfigured {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle")
-                    Text("尚未配置 AI 接口，请先到【设置】填写端点、Key 与模型。")
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle")
+                    Text("智能答疑还没有启用。请到左侧「设置」中填写服务信息。")
                 }
-                .font(.callout)
+                .font(Theme.font(13))
+                .foregroundStyle(Theme.accent)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .background(Color.orange.opacity(0.12))
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(Theme.accent.opacity(0.08))
             }
 
             if messages.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "bubble.left.and.bubble.right")
-                        .font(.system(size: 42))
-                        .foregroundStyle(.secondary)
-                    Text("向 AI 提问，或引用题库中的题目")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                EmptyStateView(
+                    icon: "bubble.left.and.bubble.right",
+                    title: "有什么想问的？",
+                    message: "直接提问即可。需要时我会查询你的题库、错题本、收藏和考试记录，并为你出讲解、测验和考试。")
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 12) {
-                            ForEach(Array(messages.enumerated()), id: \.offset) { _, m in
-                                bubble(m)
+                        VStack(alignment: .leading, spacing: 16) {
+                            ForEach(messages) { m in
+                                bubble(m).id(m.id)
                             }
                             if isLoading {
-                                HStack { ProgressView(); Text("正在思考…").font(.caption) }
-                                    .padding()
+                                HStack(spacing: 8) {
+                                    ProgressView().controlSize(.small)
+                                    Text("正在思考…").font(Theme.caption).foregroundStyle(.secondary)
+                                }
+                                .padding(.leading, 4)
                             }
                         }
-                        .padding()
+                        .frame(maxWidth: 760)
+                        .frame(maxWidth: .infinity)
+                        .padding(24)
                     }
                     .onChange(of: messages.count) {
-                        if let last = messages.indices.last {
-                            proxy.scrollTo(last, anchor: .bottom)
+                        if let last = messages.last {
+                            proxy.scrollTo(last.id, anchor: .bottom)
                         }
                     }
                 }
@@ -64,122 +133,284 @@ struct AIView: View {
 
             if let errorMessage {
                 Text(errorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal)
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.danger)
+                    .padding(.horizontal, 24)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             inputBar
         }
-        .navigationTitle("AI 答疑")
-        .onAppear { loadBank() }
     }
 
-    private func bubble(_ m: ChatMessage) -> some View {
-        HStack {
-            if m.role == "user" { Spacer(minLength: 60) }
-            Text(safeMarkdownText(m.content))
-                .font(.system(.body, design: .rounded))
-                .textSelection(.enabled)
-                .padding(12)
-                .glassEffect(m.role == "user" ? .regular.tint(.blue.opacity(0.6)) : .regular, in: .rect(cornerRadius: 14))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(MacDesign.glassBorder, lineWidth: 0.5))
-                .frame(maxWidth: .infinity, alignment: m.role == "user" ? .trailing : .leading)
-            if m.role != "user" { Spacer(minLength: 60) }
+    private func bubble(_ m: TutorMessage) -> some View {
+        let isUser = m.role == "user"
+        return VStack(alignment: isUser ? .trailing : .leading, spacing: 8) {
+            if isUser {
+                HStack {
+                    Spacer(minLength: 60)
+                    Text(safeMarkdownText(m.content))
+                        .font(Theme.body)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .foregroundStyle(.white)
+                        .background(
+                            Theme.accent,
+                            in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    if !m.steps.isEmpty {
+                        agentSteps(m.steps)
+                    }
+                    if !m.content.isEmpty {
+                        Text(safeMarkdownText(m.content))
+                            .font(Theme.body)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(
+                                Theme.surface,
+                                in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .strokeBorder(Theme.border, lineWidth: 1))
+                    }
+                    if !m.artifacts.isEmpty {
+                        artifactButtons(m)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack { Spacer(minLength: 60) }
+            }
+        }
+    }
+
+    /// 展示 AI 的思考链与工具调用
+    private func agentSteps(_ steps: [AgentStep]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "brain")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                Text("思考链与工具调用").font(Theme.font(12, .semibold)).foregroundStyle(.secondary)
+            }
+
+            ForEach(steps) { step in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: step.kind == .tool ? "wrench.and.screwdriver" : "ellipsis.bubble")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(step.kind == .tool ? Theme.accent : Color.secondary)
+                        .frame(width: 16)
+                        .padding(.top, 2)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(step.title)
+                            .font(Theme.font(12, .semibold))
+                            .foregroundStyle(step.kind == .tool ? Color.primary : .secondary)
+                        if !step.detail.isEmpty {
+                            Text(step.detail)
+                                .font(Theme.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Theme.surfaceMuted, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    /// AI 创建的讲解 / 测验 / 考试
+    private func artifactButtons(_ m: TutorMessage) -> some View {
+        FlowLayout(spacing: 8) {
+            ForEach(m.artifacts) { artifact in
+                Button {
+                    session = TrainingSessionRequest(artifacts: [artifact])
+                } label: {
+                    Label("\(artifact.kindTitle)：\(artifact.title)", systemImage: artifact.icon)
+                }
+                .buttonStyle(SecondaryActionButton())
+            }
+
+            if m.artifacts.count > 1 {
+                Button {
+                    session = TrainingSessionRequest(artifacts: m.artifacts)
+                } label: {
+                    Label("开始完整训练", systemImage: "play.fill")
+                }
+                .buttonStyle(PrimaryActionButton())
+            }
         }
     }
 
     private var inputBar: some View {
-        VStack(spacing: 12) {
-            if let ref = referenced {
-                HStack {
-                    Image(systemName: "quote.bubble")
-                    Text("已引用第 \(ref.bankOrder) 题（\(ref.type.label)）")
-                        .font(.system(.caption, design: .rounded))
-                        .lineLimit(1)
-                    Spacer()
-                    Button { referenced = nil } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain)
+        VStack(spacing: 10) {
+            if !referenced.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(referenced) { q in
+                            HStack(spacing: 6) {
+                                Image(systemName: "quote.bubble")
+                                    .font(.system(size: 10))
+                                Text("第 \(q.bankOrder) 题 · \(q.type.shortLabel)")
+                                    .font(Theme.caption)
+                                Button {
+                                    referenced.removeAll { $0.id == q.id }
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 9, weight: .bold))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .foregroundStyle(Theme.accent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Theme.accent.opacity(0.08), in: Capsule())
+                        }
+                    }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .glassPill(cornerRadius: 10)
             }
 
-            HStack {
-                TextField("输入你的问题（可引用题目）…", text: $input, axis: .vertical)
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField("输入你的问题…", text: $input, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(.system(.body, design: .rounded))
+                    .font(Theme.body)
                     .lineLimit(1...6)
                     .onSubmit { if !isLoading { send() } }
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(
+                        Theme.surfaceMuted,
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                Button {
+                    referSearch = ""
+                    referSelection = Set(referenced.map(\.id))
+                    loadBank()
+                    showReferPicker = true
+                } label: {
+                    Image(systemName: "quote.bubble")
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(width: 34, height: 34)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .background(Theme.surfaceMuted, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .disabled(isLoading)
+                .popover(isPresented: $showReferPicker, arrowEdge: .bottom) {
+                    QuestionPicker(
+                        search: $referSearch,
+                        questions: filteredQuestions,
+                        selected: $referSelection,
+                        onConfirm: confirmReferences)
+                }
 
                 Button {
                     send()
                 } label: {
-                    if isLoading {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "paperplane.fill")
+                    Group {
+                        if isLoading {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "paperplane.fill")
+                                .foregroundStyle(.white)
+                        }
                     }
+                    .frame(width: 34, height: 34)
+                    .background(
+                        Theme.accent,
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(MacDesign.accentTint)
-                .disabled(isLoading || input.trimmingCharacters(in: .whitespaces).isEmpty)
-
-                Button {
-                    referSearch = ""
-                    loadBank()
-                    showReferPicker = true
-                } label: {
-                    Label("引用", systemImage: "quote.bubble")
-                }
-                .buttonStyle(.glass)
-                .disabled(isLoading)
-                .popover(isPresented: $showReferPicker, arrowEdge: .bottom) {
-                    QuestionPicker(search: $referSearch, questions: filteredQuestions) { q in
-                        referenced = q
-                        showReferPicker = false
-                        referSearch = ""
-                    }
-                }
+                .buttonStyle(.plain)
+                .opacity(canSend ? 1 : 0.45)
+                .disabled(!canSend)
             }
-            .padding(10)
-            .glassPill(cornerRadius: 14)
-            .padding()
         }
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
+        .background(Theme.canvas)
+    }
+
+    // MARK: - 逻辑
+
+    private var canSend: Bool {
+        !isLoading && !input.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private func confirmReferences() {
+        let selected = allBank
+            .filter { referSelection.contains($0.id) }
+            .sorted { ($0.level, $0.bankOrder) < ($1.level, $1.bankOrder) }
+        referenced = selected
+        showReferPicker = false
     }
 
     private func send() {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        var content = trimmed
-        if let ref = referenced {
-            let opts = ref.options.enumerated()
-                .map { "\(ExamEngine.optionLetter($0.offset))、\($0.element)" }
-                .joined(separator: "\n")
-            content = "【题目 \(ref.type.label)】\(ref.stem)\n\(opts)\n\n我的问题：\(trimmed)"
-        }
-        guard !content.isEmpty else { return }
-        messages.append(ChatMessage(role: "user", content: content))
+        guard !trimmed.isEmpty else { return }
+
+        let references = referenced
+        // 不再强行关联题目/知识：由 AI 按需通过工具查询
+        let enriched = AITutor.chatPrompt(
+            query: trimmed, references: references, notes: appState.notes)
+
+        let history = messages.map { ChatMessage(role: $0.role, content: $0.apiContent ?? $0.content) }
+        messages.append(TutorMessage(role: "user", content: trimmed, apiContent: enriched))
         input = ""
-        referenced = nil
+        referenced = []
         errorMessage = nil
         isLoading = true
 
-        let system = ChatMessage(role: "system", content: "你是考试辅导助手。请用简体中文、条理清晰地解答题库疑问：解释知识点、给出依据，尽量简洁。")
-        let payload = messages
+        let systemPrompt = AITools.systemPrompt(profile: studentProfile())
+        let context = toolContext()
         Task {
             do {
-                let answer = try await AIService.shared.send(config: appState.aiConfig, messages: [system] + payload)
-                messages.append(ChatMessage(role: "assistant", content: answer))
+                let result = try await AITutorAgent.run(
+                    config: appState.aiConfig,
+                    history: history,
+                    userMessage: enriched,
+                    systemPrompt: systemPrompt,
+                    context: context)
+                messages.append(TutorMessage(
+                    role: "assistant",
+                    content: result.text,
+                    steps: result.steps,
+                    artifacts: result.artifacts))
             } catch {
                 errorMessage = error.localizedDescription
             }
             isLoading = false
         }
+    }
+
+    // MARK: - 学员数据
+
+    private func studentProfile() -> String {
+        AITutor.studentProfile(
+            counts: appState.counts,
+            records: appState.records,
+            wrongQuestions: appState.loadQuestions(ids: appState.wrongQuestionIds),
+            favoriteQuestions: appState.loadQuestions(ids: appState.favoriteQuestionIds))
+    }
+
+    private func toolContext() -> AIToolContext {
+        AIToolContext(
+            bank: allBank,
+            wrongQuestions: appState.loadQuestions(ids: appState.wrongQuestionIds),
+            favoriteQuestions: appState.loadQuestions(ids: appState.favoriteQuestionIds),
+            records: appState.records,
+            defaultLevel: latestLevel)
+    }
+
+    private var latestLevel: Level {
+        appState.records.first?.levelEnum ?? .a
     }
 
     private var filteredQuestions: [Question] {
@@ -196,82 +427,104 @@ struct AIView: View {
     }
 }
 
-/// 引用题目的搜索选择面板
+/// 引用题目的搜索选择面板（支持多选）
 private struct QuestionPicker: View {
     @Binding var search: String
     let questions: [Question]
-    let onSelect: (Question) -> Void
+    @Binding var selected: Set<Int64>
+    let onConfirm: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                 TextField("搜索题干或选项…", text: $search)
                     .textFieldStyle(.plain)
                 if !search.isEmpty {
-                    Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                        .buttonStyle(.plain)
+                    Button { search = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .padding(10)
+            .padding(12)
 
-            Divider()
+            Divider().overlay(Theme.separator)
 
             if questions.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "tray")
-                        .font(.system(size: 30))
-                        .foregroundStyle(.secondary)
-                    Text(search.isEmpty ? "暂无题目，请先在【导入题库】中导入" : "没有匹配的题目")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                EmptyStateView(
+                    icon: "tray",
+                    title: search.isEmpty ? "题库还是空的" : "没有找到相关题目",
+                    message: search.isEmpty ? "请先导入题库后再引用。" : "换个关键词再试试。")
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(questions) { q in
-                            Button {
-                                onSelect(q)
-                            } label: {
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text(q.level)
-                                        .font(.caption2.bold())
-                                        .foregroundStyle(.white)
-                                        .frame(width: 22, height: 22)
-                                        .background(levelColor(q.level), in: RoundedRectangle(cornerRadius: 6))
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("第 \(q.bankOrder) 题 · \(q.type.shortLabel)")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                        Text(q.stem)
-                                            .font(.callout)
-                                            .multilineTextAlignment(.leading)
-                                            .lineLimit(2)
-                                    }
-                                    Spacer(minLength: 0)
-                                }
-                                .padding(.vertical, 6)
-                                .padding(.horizontal, 10)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
+                            row(q)
                         }
                     }
                     .padding(.vertical, 4)
                 }
             }
+
+            Divider().overlay(Theme.separator)
+
+            HStack(spacing: 10) {
+                Text("已选 \(selected.count) 题")
+                    .font(Theme.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if !selected.isEmpty {
+                    Button("清除") { selected.removeAll() }
+                        .font(Theme.caption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                }
+                Button("引用") { onConfirm() }
+                    .buttonStyle(PrimaryActionButton())
+                    .disabled(selected.isEmpty)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         }
-        .frame(width: 400, height: 440)
+        .frame(width: 420, height: 480)
     }
 
-    private func levelColor(_ level: String) -> Color {
-        switch level {
-        case "A": return Color.blue
-        case "B": return Color.teal
-        case "C": return Color.purple
-        default: return Color.gray
+    private func row(_ q: Question) -> some View {
+        let isSelected = selected.contains(q.id)
+        return Button {
+            if isSelected {
+                selected.remove(q.id)
+            } else {
+                selected.insert(q.id)
+            }
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Theme.accent : Color.secondary.opacity(0.5))
+                    .padding(.top, 1)
+                Text(q.level)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 22, height: 22)
+                    .background(Theme.accent, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("第 \(q.bankOrder) 题 · \(q.type.shortLabel)")
+                        .font(Theme.caption)
+                        .foregroundStyle(.secondary)
+                    Text(q.stem)
+                        .font(Theme.font(13))
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 7)
+            .padding(.horizontal, 12)
+            .contentShape(Rectangle())
+            .background(isSelected ? Theme.accent.opacity(0.06) : Color.clear)
         }
+        .buttonStyle(.plain)
     }
 }

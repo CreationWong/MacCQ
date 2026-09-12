@@ -16,6 +16,8 @@ struct ExamQuestion: Identifiable, Hashable {
     let options: [String]
     let correctIndices: [Int]
     let bankOrder: Int
+    /// AI 生成题目的解析（题库题目为 nil）
+    var explanation: String? = nil
 }
 
 /// 组卷与阅卷引擎

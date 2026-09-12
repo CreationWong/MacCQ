@@ -2,8 +2,6 @@
 //  ExamResultView.swift
 //  MacCQ
 //
-//  Created by CreationWong on 2026/9/2.
-//
 
 import SwiftUI
 
@@ -16,87 +14,145 @@ struct ExamResultView: View {
     let duration: Int
     let onRestart: () -> Void
 
+    @State private var showAIReport = false
+    @State private var showTraining = false
+
     private var passed: Bool { level.passed(correctCount: correct) }
+    private var analysis: StudyAnalysis { StudyAnalyzer.analyze(paper: paper, answers: answers) }
 
     var body: some View {
-        VStack(spacing: 18) {
-            Image(systemName: passed ? "checkmark.seal.fill" : "xmark.seal.fill")
-                .font(.system(size: 46))
-                .foregroundStyle(passed ? .green : .red)
-            Text(passed ? "恭喜，考试合格" : "很遗憾，考试未合格")
-                .font(.title.bold())
+        ScrollView {
+            VStack(spacing: 22) {
+                VStack(spacing: 12) {
+                    Image(systemName: passed ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .font(.system(size: 52, weight: .regular))
+                        .foregroundStyle(passed ? Theme.success : Theme.danger)
+                    Text(passed ? "考试合格" : "考试未合格")
+                        .font(Theme.pageTitle)
+                    Text(passed ? "恭喜你通过了本次模拟考试。" : "继续练习，下次一定可以。")
+                        .font(Theme.body)
+                        .foregroundStyle(.secondary)
+                }
 
-            HStack(spacing: 14) {
-                stat("答题数", "\(paper.count)")
-                stat("答对", "\(correct)")
-                stat("答错", "\(wrong.count)")
-                stat("正确率", String(format: "%.0f%%", paper.count == 0 ? 0 : Double(correct) / Double(paper.count) * 100))
-                stat("用时", timeText(duration))
+                HStack(spacing: 0) {
+                    stat("答题", "\(paper.count)")
+                    statDivider
+                    stat("答对", "\(correct)")
+                    statDivider
+                    stat("答错", "\(wrong.count)")
+                    statDivider
+                    stat("正确率", String(format: "%.0f%%", paper.count == 0 ? 0 : Double(correct) / Double(paper.count) * 100))
+                    statDivider
+                    stat("用时", timeText(duration))
+                }
+                .card(padding: 18)
+                .frame(maxWidth: 640)
+
+                StudyAnalysisCard(analysis: analysis)
+                    .frame(maxWidth: 640, alignment: .leading)
+
+                if wrong.isEmpty {
+                    Text("全部答对，没有错题。")
+                        .font(Theme.body)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                } else {
+                    wrongReview
+                }
+
+                HStack(spacing: 12) {
+                    Button("再考一次") { onRestart() }
+                        .buttonStyle(PrimaryActionButton())
+                    Button {
+                        showAIReport = true
+                    } label: {
+                        Label("AI 深度分析", systemImage: "sparkles")
+                    }
+                    .buttonStyle(SecondaryActionButton())
+                    Button {
+                        showTraining = true
+                    } label: {
+                        Label("专项训练", systemImage: "wand.and.stars")
+                    }
+                    .buttonStyle(SecondaryActionButton())
+                }
             }
-            .glassCard(cornerRadius: 20)
-            .padding(.horizontal, 28)
+            .frame(maxWidth: 720)
+            .frame(maxWidth: .infinity)
+            .padding(32)
+        }
+        .sheet(isPresented: $showAIReport) {
+            AIReportSheet(
+                title: "AI 考试分析",
+                systemPrompt: AITutor.analystSystem,
+                userPrompt: AITutor.examPrompt(analysis: analysis))
+        }
+        .sheet(isPresented: $showTraining) {
+            TargetedTrainingView(
+                fixedLevel: level,
+                initialTopics: analysis.weakTopics.map(\.title),
+                showsCloseButton: true)
+        }
+    }
 
-            if !wrong.isEmpty {
-                Divider()
-                wrongReview
-            } else {
-                Text("全部答对，无错题。")
+    // MARK: - 错题回顾
+
+    private var wrongReview: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Text("错题回顾").font(Theme.sectionTitle)
+                Spacer()
+                Text("已自动加入错题本")
+                    .font(Theme.caption)
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 14) {
-                Button("再次考试") { onRestart() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(MacDesign.accentTint)
-                Button("查看成绩记录") { }
-                    .disabled(true)
-            }
-            .padding(.top, 8)
-        }
-        .padding(40)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var wrongReview: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("错题回顾").font(.headline)
-                ForEach(wrong, id: \.self) { i in
-                    let q = paper[i]
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("\(i + 1)、\(q.stem)")
-                            .fontWeight(.medium)
-                        Text("你的答案：\(letters(answers[i] ?? []))")
-                            .foregroundStyle(.red)
-                        Text("正确答案：\(letters(Set(q.correctIndices)))")
-                            .foregroundStyle(.green)
+            VStack(spacing: 0) {
+                ForEach(Array(wrong.enumerated()), id: \.element) { offset, i in
+                    if offset > 0 {
+                        Divider().overlay(Theme.separator)
                     }
-                    .padding(10)
+                    let q = paper[i]
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("\(i + 1)、\(q.stem)")
+                            .font(Theme.font(14, .medium))
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        HStack(spacing: 16) {
+                            Label("你的答案：\(letters(answers[i] ?? []))", systemImage: "xmark")
+                                .foregroundStyle(Theme.danger)
+                            Label("正确答案：\(letters(Set(q.correctIndices)))", systemImage: "checkmark")
+                                .foregroundStyle(Theme.success)
+                        }
+                        .font(Theme.caption)
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.gray.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.vertical, 12)
                 }
             }
-            .frame(maxWidth: 640)
         }
-        .frame(maxHeight: 260)
+        .card(padding: 20)
+        .frame(maxWidth: 640)
+    }
+
+    private var statDivider: some View {
+        Divider().frame(height: 32).overlay(Theme.separator)
     }
 
     private func stat(_ label: String, _ value: String) -> some View {
-        VStack(spacing: 4) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.system(.title2, design: .rounded, weight: .semibold))
+        VStack(spacing: 5) {
+            Text(value).font(Theme.font(19, .semibold))
+            Text(label).font(Theme.caption).foregroundStyle(.secondary)
         }
-        .frame(minWidth: 76)
+        .frame(maxWidth: .infinity)
     }
 
     private func letters(_ set: Set<Int>) -> String {
-        let sorted = set.sorted()
-        return sorted.map { ExamEngine.optionLetter($0) }.joined(separator: " ")
+        set.sorted().map { ExamEngine.optionLetter($0) }.joined(separator: " ")
     }
 
     private func letters(_ arr: [Int]) -> String {
-        let sorted = arr.sorted()
-        return sorted.map { ExamEngine.optionLetter($0) }.joined(separator: " ")
+        arr.sorted().map { ExamEngine.optionLetter($0) }.joined(separator: " ")
     }
 
     private func timeText(_ s: Int) -> String {
