@@ -113,8 +113,15 @@ struct PracticeView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("第 \(index + 1) / \(questions.count) 题")
-                    .font(Theme.cardTitle)
+                HStack(spacing: 8) {
+                    Text("第 \(index + 1) / \(questions.count) 题")
+                        .font(Theme.cardTitle)
+                    if let progress = appState.progress(for: questions[index].id) {
+                        Tag(
+                            text: progress.lastResult ? "上次答对" : "上次答错",
+                            color: progress.lastResult ? Theme.success : Theme.danger)
+                    }
+                }
                 ProgressView(value: Double(index + 1), total: Double(questions.count))
                     .progressViewStyle(.linear)
                     .tint(Theme.accent)
@@ -122,6 +129,14 @@ struct PracticeView: View {
             }
 
             Spacer()
+
+            VStack(alignment: .trailing, spacing: 3) {
+                Text("已练 \(practicedCount) / \(questions.count)")
+                    .font(Theme.font(13, .semibold))
+                Text("答对 \(correctCount) 题")
+                    .font(Theme.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             HStack(spacing: 6) {
                 Text("跳转").font(Theme.caption).foregroundStyle(.secondary)
@@ -154,6 +169,14 @@ struct PracticeView: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
+    }
+
+    private var practicedCount: Int {
+        questions.filter { appState.progress(for: $0.id) != nil }.count
+    }
+
+    private var correctCount: Int {
+        questions.filter { appState.progress(for: $0.id)?.lastResult == true }.count
     }
 
     private func jumpTo() {
@@ -204,15 +227,18 @@ struct PracticeView: View {
 
     private func recordCurrentAnswer() {
         let question = questions[index]
+        let isCorrect = ExamEngine.isCorrect(answer: selection, for: question)
         if !answeredQuestions.contains(where: { $0.id == question.id }) {
             answeredQuestions.append(question)
         }
-        if !ExamEngine.isCorrect(answer: selection, for: question) {
+        if !isCorrect {
             if !wrongQuestions.contains(where: { $0.id == question.id }) {
                 wrongQuestions.append(question)
             }
             appState.addWrongQuestion(question.id)
         }
+        // 记住练习过的题目
+        appState.recordPractice(questionId: question.id, correct: isCorrect)
     }
 
     private func step(_ delta: Int) {
@@ -251,8 +277,9 @@ struct PracticeView: View {
         // empty bank, so no stale answer or index survives a level switch.
         selection = []
         revealed = false
-        index = 0
         answeredQuestions = []
         wrongQuestions = []
+        // 从第一道还没练习过的题继续
+        index = questions.firstIndex { appState.progress(for: $0.id) == nil } ?? 0
     }
 }

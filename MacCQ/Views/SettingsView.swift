@@ -16,6 +16,7 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
+                accountSection
                 aiSection
                 chatSection
                 bankSection
@@ -29,6 +30,31 @@ struct SettingsView: View {
         .pageBackground()
         .navigationTitle("设置")
         .onAppear { load() }
+    }
+
+    private var accountSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("账号").font(Theme.sectionTitle)
+
+            HStack(spacing: 10) {
+                Image(systemName: "person.crop.circle.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(appState.currentUser?.username ?? "未登录")
+                        .font(Theme.font(15, .semibold))
+                    Text("错题、收藏、练习进度、成绩与对话都保存在该账号下")
+                        .font(Theme.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("切换用户") {
+                    appState.logout()
+                }
+                .buttonStyle(SecondaryActionButton())
+            }
+        }
+        .card(padding: 20)
     }
 
     private var aiSection: some View {

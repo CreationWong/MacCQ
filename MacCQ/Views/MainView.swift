@@ -6,8 +6,8 @@
 import SwiftUI
 
 struct MainView: View {
+    @Environment(AppState.self) private var appState
     @State private var route: Route? = .importBank
-    @State private var appState = AppState()
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
@@ -34,7 +34,6 @@ struct MainView: View {
             }
         }
         .background(ToolbarChromeFix())
-        .environment(appState)
         .tint(Theme.accent)
         .frame(minWidth: 1000, minHeight: 660)
     }
@@ -97,7 +96,10 @@ struct MainView: View {
                 .background(Theme.accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 1) {
                 Text("MacCQ").font(Theme.font(15, .bold))
-                Text("业余无线电操作证").font(Theme.caption).foregroundStyle(.secondary)
+                Text(appState.currentUser?.username ?? "未登录")
+                    .font(Theme.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             Spacer()
         }

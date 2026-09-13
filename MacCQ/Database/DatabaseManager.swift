@@ -7,13 +7,17 @@
 
 import Foundation
 
-/// 数据库管理器：负责题库、考试记录与 AI 配置的读写。
+/// 数据库管理器：负责题库、用户、学习进度、考试记录与 AI 配置的读写。
+/// 题库为整机共享；错题、收藏、勘误、练习进度、考试记录、对话都按用户隔离。
 @MainActor
 final class DatabaseManager {
     static let shared = DatabaseManager()
 
     private var db: SQLiteDB?
     private let dbURL: URL
+
+    /// 当前登录用户；0 表示未登录（旧数据归属）
+    private(set) var currentUserId: Int64 = 0
 
     private init() {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -50,6 +54,12 @@ final class DatabaseManager {
         );
         CREATE INDEX IF NOT EXISTS idx_questions_level ON questions(level);
 
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            created_at REAL NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS exam_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             level TEXT NOT NULL,
@@ -74,16 +84,29 @@ final class DatabaseManager {
         );
 
         CREATE TABLE IF NOT EXISTS question_marks (
+            user_id INTEGER NOT NULL DEFAULT 0,
             question_id INTEGER NOT NULL,
             kind TEXT NOT NULL,
             marked_at REAL NOT NULL,
-            PRIMARY KEY (question_id, kind)
+            PRIMARY KEY (user_id, question_id, kind)
         );
 
         CREATE TABLE IF NOT EXISTS question_notes (
-            question_id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 0,
+            question_id INTEGER NOT NULL,
             note TEXT NOT NULL,
-            updated_at REAL NOT NULL
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (user_id, question_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS practice_progress (
+            user_id INTEGER NOT NULL,
+            question_id INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            last_result INTEGER NOT NULL DEFAULT 0,
+            last_practiced_at REAL NOT NULL,
+            PRIMARY KEY (user_id, question_id)
         );
 
         CREATE TABLE IF NOT EXISTS chat_messages (
@@ -104,6 +127,7 @@ final class DatabaseManager {
             updated_at REAL NOT NULL
         );
         """)
+
         // 旧版本数据库升级：为考试记录补充薄弱主题列（列已存在时会报错，忽略即可）
         try? db.exec("ALTER TABLE exam_records ADD COLUMN topics TEXT")
         // 旧版本对话记录升级：补充会话列并归档到「历史对话」
@@ -117,6 +141,144 @@ final class DatabaseManager {
         UPDATE chat_messages SET session_id = (SELECT MAX(id) FROM chat_sessions)
         WHERE session_id IS NULL
         """)
+
+        migrateUserColumns(in: db)
+    }
+
+    /// 为老数据库补充 user_id 列；错题/勘误表需要重建主键
+    private func migrateUserColumns(in db: SQLiteDB) {
+        if !hasColumn("exam_records", "user_id") {
+            try? db.exec("ALTER TABLE exam_records ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+        }
+        if !hasColumn("chat_sessions", "user_id") {
+            try? db.exec("ALTER TABLE chat_sessions ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+        }
+        if !hasColumn("question_marks", "user_id") {
+            try? db.exec("""
+            CREATE TABLE IF NOT EXISTS question_marks_new (
+                user_id INTEGER NOT NULL DEFAULT 0,
+                question_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                marked_at REAL NOT NULL,
+                PRIMARY KEY (user_id, question_id, kind)
+            );
+            INSERT OR IGNORE INTO question_marks_new (user_id, question_id, kind, marked_at)
+            SELECT 0, question_id, kind, marked_at FROM question_marks;
+            DROP TABLE question_marks;
+            ALTER TABLE question_marks_new RENAME TO question_marks;
+            """)
+        }
+        if !hasColumn("question_notes", "user_id") {
+            try? db.exec("""
+            CREATE TABLE IF NOT EXISTS question_notes_new (
+                user_id INTEGER NOT NULL DEFAULT 0,
+                question_id INTEGER NOT NULL,
+                note TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (user_id, question_id)
+            );
+            INSERT OR IGNORE INTO question_notes_new (user_id, question_id, note, updated_at)
+            SELECT 0, question_id, note, updated_at FROM question_notes;
+            DROP TABLE question_notes;
+            ALTER TABLE question_notes_new RENAME TO question_notes;
+            """)
+        }
+    }
+
+    private func hasColumn(_ table: String, _ column: String) -> Bool {
+        guard let db else { return false }
+        do {
+            let stmt = try db.query("PRAGMA table_info(\(table))", params: [])
+            defer { stmt.close() }
+            while try stmt.step() {
+                if stmt.text(1) == column { return true }
+            }
+        } catch { }
+        return false
+    }
+
+    // MARK: - 用户
+
+    func setCurrentUser(_ id: Int64) {
+        currentUserId = id
+    }
+
+    /// 注册用户；用户名非法或已存在时返回 nil
+    func createUser(username: String) -> User? {
+        guard let db else { return nil }
+        let name = UsernameValidator.normalized(username)
+        guard UsernameValidator.isValid(name), findUser(username: name) == nil else { return nil }
+        let isFirstUser = loadUsers().isEmpty
+        let now = Date().timeIntervalSince1970
+        try? db.run("INSERT INTO users (username, created_at) VALUES (?, ?)", params: [name, now])
+        let id = db.lastInsertRowID()
+        guard id > 0 else { return nil }
+        // 首个账号继承升级前属于本机的学习数据
+        if isFirstUser {
+            adoptLegacyData(userId: id)
+        }
+        return User(id: id, username: name, createdAt: Date(timeIntervalSince1970: now))
+    }
+
+    /// 把旧版本（无用户概念，user_id = 0）的数据归属到指定用户
+    private func adoptLegacyData(userId: Int64) {
+        guard let db else { return }
+        try? db.run("UPDATE exam_records SET user_id = ? WHERE user_id = 0", params: [userId])
+        try? db.run("UPDATE question_marks SET user_id = ? WHERE user_id = 0", params: [userId])
+        try? db.run("UPDATE question_notes SET user_id = ? WHERE user_id = 0", params: [userId])
+        try? db.run("UPDATE chat_sessions SET user_id = ? WHERE user_id = 0", params: [userId])
+        try? db.run("UPDATE practice_progress SET user_id = ? WHERE user_id = 0", params: [userId])
+    }
+
+    func findUser(username: String) -> User? {
+        guard let db else { return nil }
+        let name = UsernameValidator.normalized(username)
+        do {
+            let stmt = try db.query(
+                "SELECT id, username, created_at FROM users WHERE username = ? COLLATE NOCASE",
+                params: [name])
+            defer { stmt.close() }
+            if try stmt.step() {
+                return user(from: stmt)
+            }
+        } catch { }
+        return nil
+    }
+
+    func findUser(id: Int64) -> User? {
+        guard let db, id > 0 else { return nil }
+        do {
+            let stmt = try db.query(
+                "SELECT id, username, created_at FROM users WHERE id = ?",
+                params: [id])
+            defer { stmt.close() }
+            if try stmt.step() {
+                return user(from: stmt)
+            }
+        } catch { }
+        return nil
+    }
+
+    func loadUsers() -> [User] {
+        guard let db else { return [] }
+        var result: [User] = []
+        do {
+            let stmt = try db.query(
+                "SELECT id, username, created_at FROM users ORDER BY created_at ASC",
+                params: [])
+            defer { stmt.close() }
+            while try stmt.step() {
+                if let user = user(from: stmt) { result.append(user) }
+            }
+        } catch { }
+        return result
+    }
+
+    private func user(from stmt: Statement) -> User? {
+        User(
+            id: stmt.int64(0),
+            username: stmt.text(1),
+            createdAt: Date(timeIntervalSince1970: stmt.double(2)))
     }
 
     // MARK: - 题库
@@ -145,9 +307,12 @@ final class DatabaseManager {
         return result
     }
 
-    /// 清空某个级别的题库（重新导入前使用）
+    /// 清空某个级别的题库（重新导入前使用），并清理相关的个人数据
     func clearQuestions(level: String) throws {
         guard let db else { return }
+        try db.run("DELETE FROM question_marks WHERE question_id IN (SELECT id FROM questions WHERE level = ?)", params: [level])
+        try db.run("DELETE FROM question_notes WHERE question_id IN (SELECT id FROM questions WHERE level = ?)", params: [level])
+        try db.run("DELETE FROM practice_progress WHERE question_id IN (SELECT id FROM questions WHERE level = ?)", params: [level])
         try db.run("DELETE FROM questions WHERE level = ?", params: [level])
     }
 
@@ -261,20 +426,21 @@ final class DatabaseManager {
     func addMark(questionId: Int64, kind: String) {
         guard let db, questionId > 0 else { return }
         try? db.run("""
-        INSERT INTO question_marks (question_id, kind, marked_at) VALUES (?, ?, ?)
-        ON CONFLICT(question_id, kind) DO UPDATE SET marked_at = excluded.marked_at
-        """, params: [questionId, kind, Date().timeIntervalSince1970])
+        INSERT INTO question_marks (user_id, question_id, kind, marked_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id, question_id, kind) DO UPDATE SET marked_at = excluded.marked_at
+        """, params: [currentUserId, questionId, kind, Date().timeIntervalSince1970])
     }
 
     func removeMark(questionId: Int64, kind: String) {
         guard let db else { return }
-        try? db.run("DELETE FROM question_marks WHERE question_id = ? AND kind = ?",
-                    params: [questionId, kind])
+        try? db.run("DELETE FROM question_marks WHERE user_id = ? AND question_id = ? AND kind = ?",
+                    params: [currentUserId, questionId, kind])
     }
 
     func clearMarks(kind: String) {
         guard let db else { return }
-        try? db.run("DELETE FROM question_marks WHERE kind = ?", params: [kind])
+        try? db.run("DELETE FROM question_marks WHERE user_id = ? AND kind = ?",
+                    params: [currentUserId, kind])
     }
 
     /// 按标记时间倒序返回题目 ID
@@ -283,8 +449,8 @@ final class DatabaseManager {
         var result: [Int64] = []
         do {
             let stmt = try db.query(
-                "SELECT question_id FROM question_marks WHERE kind = ? ORDER BY marked_at DESC",
-                params: [kind])
+                "SELECT question_id FROM question_marks WHERE user_id = ? AND kind = ? ORDER BY marked_at DESC",
+                params: [currentUserId, kind])
             defer { stmt.close() }
             while try stmt.step() {
                 result.append(stmt.int64(0))
@@ -293,18 +459,66 @@ final class DatabaseManager {
         return result
     }
 
+    // MARK: - 练习进度
+
+    func recordPractice(questionId: Int64, correct: Bool) {
+        guard let db, questionId > 0 else { return }
+        try? db.run("""
+        INSERT INTO practice_progress (user_id, question_id, attempts, correct, last_result, last_practiced_at)
+        VALUES (?, ?, 1, ?, ?, ?)
+        ON CONFLICT(user_id, question_id) DO UPDATE SET
+            attempts = attempts + 1,
+            correct = correct + excluded.correct,
+            last_result = excluded.last_result,
+            last_practiced_at = excluded.last_practiced_at
+        """, params: [
+            currentUserId,
+            questionId,
+            correct ? 1 : 0,
+            correct ? 1 : 0,
+            Date().timeIntervalSince1970,
+        ])
+    }
+
+    func loadPracticeProgress() -> [Int64: PracticeProgress] {
+        guard let db else { return [:] }
+        var result: [Int64: PracticeProgress] = [:]
+        do {
+            let stmt = try db.query(
+                "SELECT question_id, attempts, correct, last_result, last_practiced_at FROM practice_progress WHERE user_id = ?",
+                params: [currentUserId])
+            defer { stmt.close() }
+            while try stmt.step() {
+                let id = stmt.int64(0)
+                result[id] = PracticeProgress(
+                    questionId: id,
+                    attempts: Int(stmt.int64(1)),
+                    correct: Int(stmt.int64(2)),
+                    lastResult: stmt.int64(3) != 0,
+                    lastPracticedAt: Date(timeIntervalSince1970: stmt.double(4)))
+            }
+        } catch { }
+        return result
+    }
+
+    func clearPracticeProgress() {
+        guard let db else { return }
+        try? db.run("DELETE FROM practice_progress WHERE user_id = ?", params: [currentUserId])
+    }
+
     // MARK: - 题目勘误
 
     func saveNote(questionId: Int64, note: String) {
         guard let db else { return }
         let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            try? db.run("DELETE FROM question_notes WHERE question_id = ?", params: [questionId])
+            try? db.run("DELETE FROM question_notes WHERE user_id = ? AND question_id = ?",
+                        params: [currentUserId, questionId])
         } else {
             try? db.run("""
-            INSERT INTO question_notes (question_id, note, updated_at) VALUES (?, ?, ?)
-            ON CONFLICT(question_id) DO UPDATE SET note = excluded.note, updated_at = excluded.updated_at
-            """, params: [questionId, trimmed, Date().timeIntervalSince1970])
+            INSERT INTO question_notes (user_id, question_id, note, updated_at) VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, question_id) DO UPDATE SET note = excluded.note, updated_at = excluded.updated_at
+            """, params: [currentUserId, questionId, trimmed, Date().timeIntervalSince1970])
         }
     }
 
@@ -312,7 +526,9 @@ final class DatabaseManager {
         guard let db else { return [:] }
         var result: [Int64: String] = [:]
         do {
-            let stmt = try db.query("SELECT question_id, note FROM question_notes", params: [])
+            let stmt = try db.query(
+                "SELECT question_id, note FROM question_notes WHERE user_id = ?",
+                params: [currentUserId])
             defer { stmt.close() }
             while try stmt.step() {
                 result[stmt.int64(0)] = stmt.text(1)
@@ -328,8 +544,8 @@ final class DatabaseManager {
         guard let db else { return 0 }
         let now = Date().timeIntervalSince1970
         try? db.run(
-            "INSERT INTO chat_sessions (title, created_at, updated_at) VALUES (?, ?, ?)",
-            params: [title, now, now])
+            "INSERT INTO chat_sessions (title, created_at, updated_at, user_id) VALUES (?, ?, ?, ?)",
+            params: [title, now, now, currentUserId])
         return db.lastInsertRowID()
     }
 
@@ -338,8 +554,8 @@ final class DatabaseManager {
         var result: [ChatSession] = []
         do {
             let stmt = try db.query(
-                "SELECT id, title, created_at, updated_at FROM chat_sessions ORDER BY updated_at DESC",
-                params: [])
+                "SELECT id, title, created_at, updated_at FROM chat_sessions WHERE user_id = ? ORDER BY updated_at DESC",
+                params: [currentUserId])
             defer { stmt.close() }
             while try stmt.step() {
                 result.append(ChatSession(
@@ -352,37 +568,50 @@ final class DatabaseManager {
         return result
     }
 
+    func sessionBelongsToCurrentUser(_ id: Int64) -> Bool {
+        guard let db else { return false }
+        do {
+            let stmt = try db.query("SELECT 1 FROM chat_sessions WHERE id = ? AND user_id = ?",
+                                    params: [id, currentUserId])
+            defer { stmt.close() }
+            return try stmt.step()
+        } catch { }
+        return false
+    }
+
     func renameChatSession(id: Int64, title: String) {
         guard let db else { return }
-        try? db.run("UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ?",
-                    params: [title, Date().timeIntervalSince1970, id])
+        try? db.run("UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                    params: [title, Date().timeIntervalSince1970, id, currentUserId])
     }
 
     func touchChatSession(id: Int64) {
         guard let db else { return }
-        try? db.run("UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
-                    params: [Date().timeIntervalSince1970, id])
+        try? db.run("UPDATE chat_sessions SET updated_at = ? WHERE id = ? AND user_id = ?",
+                    params: [Date().timeIntervalSince1970, id, currentUserId])
     }
 
     func deleteChatSession(id: Int64) {
-        guard let db else { return }
+        guard let db, sessionBelongsToCurrentUser(id) else { return }
         try? db.run("DELETE FROM chat_messages WHERE session_id = ?", params: [id])
-        try? db.run("DELETE FROM chat_sessions WHERE id = ?", params: [id])
+        try? db.run("DELETE FROM chat_sessions WHERE id = ? AND user_id = ?", params: [id, currentUserId])
     }
 
     func clearChatSession(id: Int64) {
-        guard let db else { return }
+        guard let db, sessionBelongsToCurrentUser(id) else { return }
         try? db.run("DELETE FROM chat_messages WHERE session_id = ?", params: [id])
     }
 
     func clearAllChat() {
         guard let db else { return }
-        try? db.exec("DELETE FROM chat_messages; DELETE FROM chat_sessions;")
+        try? db.run("DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE user_id = ?)",
+                    params: [currentUserId])
+        try? db.run("DELETE FROM chat_sessions WHERE user_id = ?", params: [currentUserId])
     }
 
     @discardableResult
     func appendChatMessage(_ record: ChatMessageRecord) -> Int64 {
-        guard let db else { return 0 }
+        guard let db, sessionBelongsToCurrentUser(record.sessionId) else { return 0 }
         let steps = (try? JSONEncoder().encode(record.steps))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         let artifacts = (try? JSONEncoder().encode(record.artifacts))
@@ -403,7 +632,7 @@ final class DatabaseManager {
     }
 
     func loadChatMessages(sessionId: Int64) -> [ChatMessageRecord] {
-        guard let db else { return [] }
+        guard let db, sessionBelongsToCurrentUser(sessionId) else { return [] }
         var result: [ChatMessageRecord] = []
         do {
             let stmt = try db.query(
@@ -450,6 +679,11 @@ final class DatabaseManager {
         """, params: [key, value])
     }
 
+    func deleteSetting(_ key: String) {
+        guard let db else { return }
+        try? db.run("DELETE FROM settings WHERE key = ?", params: [key])
+    }
+
     // MARK: - 考试记录
 
     func saveRecord(_ record: ExamRecord) {
@@ -457,8 +691,8 @@ final class DatabaseManager {
         let topics = (try? JSONSerialization.data(withJSONObject: record.weakTopics))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         try? db.run("""
-        INSERT INTO exam_records (level, mode, date, total, correct, passed, duration, topics)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO exam_records (level, mode, date, total, correct, passed, duration, topics, user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, params: [
             record.level,
             record.mode,
@@ -468,6 +702,7 @@ final class DatabaseManager {
             record.passed,
             record.durationSeconds,
             topics,
+            currentUserId,
         ])
     }
 
@@ -476,8 +711,8 @@ final class DatabaseManager {
         var result: [ExamRecord] = []
         do {
             let stmt = try db.query(
-                "SELECT id, level, mode, date, total, correct, passed, duration, topics FROM exam_records ORDER BY date DESC",
-                params: [])
+                "SELECT id, level, mode, date, total, correct, passed, duration, topics FROM exam_records WHERE user_id = ? ORDER BY date DESC",
+                params: [currentUserId])
             defer { stmt.close() }
             while try stmt.step() {
                 let id = stmt.int64(0)
@@ -499,7 +734,7 @@ final class DatabaseManager {
 
     func clearRecords() {
         guard let db else { return }
-        try? db.exec("DELETE FROM exam_records")
+        try? db.run("DELETE FROM exam_records WHERE user_id = ?", params: [currentUserId])
     }
 
     // MARK: - AI 配置

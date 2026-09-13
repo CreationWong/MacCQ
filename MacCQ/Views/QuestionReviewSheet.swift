@@ -104,6 +104,10 @@ struct QuestionReviewSheet: View {
                 if !revealed {
                     Button {
                         revealed = true
+                        let question = questions[index]
+                        appState.recordPractice(
+                            questionId: question.id,
+                            correct: ExamEngine.isCorrect(answer: selection, for: question))
                     } label: {
                         Label("查看答案", systemImage: "eye")
                     }

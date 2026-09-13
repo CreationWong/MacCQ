@@ -7,9 +7,12 @@ import SwiftUI
 
 @main
 struct MacCQApp: App {
+    @State private var appState = AppState()
+
     var body: some Scene {
         WindowGroup {
-            MainView()
+            RootView()
+                .environment(appState)
         }
         .windowResizability(.contentMinSize)
         .commands {
