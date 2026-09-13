@@ -121,7 +121,9 @@ enum AITools {
         【可用工具】
         你可以调用工具来查询学员数据或知识、创建讲解（PPT）、测验和考试。
         调用工具时，先简要说明你的思路（一两句话），然后在最后输出一个 JSON 对象。
-        不要输出 JSON 以外的其他格式内容。
+        必须使用 {"tool":"工具名","arguments":{...}} 的完整格式，不要省略外层的 tool 与 arguments，
+        也不要用 Markdown 代码块包裹 JSON。JSON 之后不要再输出任何内容。
+        内容要精简：每条要点不超过 40 字，避免输出过长导致中断。
 
         工具列表：
         1. search_questions — 查询题库、错题本、收藏或考试记录
@@ -149,13 +151,39 @@ enum AITools {
 
     // MARK: - 解析工具调用
 
-    /// 从模型回复中解析工具调用；返回（思考文本，工具调用）
+    /// 从模型回复中解析工具调用；返回（思考文本，工具调用）。
+    /// 兼容两种输出：
+    /// 1. 规范格式 {"tool":"...","arguments":{...}}
+    /// 2. 模型直接给出的参数对象（根据字段推断工具）
     static func parseCall(from text: String) -> (thinking: String, call: AIToolCall)? {
         for object in jsonObjects(in: text) {
             guard let data = object.json.data(using: .utf8),
-                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let tool = dict["tool"] as? String else { continue }
-            let arguments = dict["arguments"] as? [String: Any] ?? [:]
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+
+            let call: AIToolCall
+            if let tool = (dict["tool"] as? String) ?? (dict["name"] as? String) {
+                var arguments = (dict["arguments"] as? [String: Any]) ?? [:]
+                // 兼容 arguments 被序列化成字符串的情况
+                if arguments.isEmpty, let text = dict["arguments"] as? String,
+                   let data = text.data(using: .utf8),
+                   let parsedArguments = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    arguments = parsedArguments
+                }
+                if arguments.isEmpty {
+                    arguments = dict.filter { $0.key != "tool" && $0.key != "name" && $0.key != "arguments" }
+                }
+                call = AIToolCall(name: tool, arguments: arguments)
+            } else if dict["slides"] != nil {
+                call = AIToolCall(name: "create_lesson", arguments: dict)
+            } else if dict["questions"] != nil {
+                call = AIToolCall(name: "create_quiz", arguments: dict)
+            } else if dict["topics"] != nil || dict["question_count"] != nil || dict["questionCount"] != nil {
+                call = AIToolCall(name: "create_exam", arguments: dict)
+            } else if dict["source"] != nil || dict["query"] != nil {
+                call = AIToolCall(name: "search_questions", arguments: dict)
+            } else {
+                continue
+            }
 
             var thinking = text
             thinking.removeSubrange(object.range)
@@ -164,14 +192,42 @@ enum AITools {
                 .replacingOccurrences(of: "```", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
-            return (thinking, AIToolCall(name: tool, arguments: arguments))
+            return (thinking, call)
         }
         return nil
     }
 
-    /// 回复里是否出现了疑似工具调用的内容
+    /// 回复里是否出现了疑似工具调用的内容（含被截断、未按规范包裹的情况）
     static func looksLikeToolCall(_ text: String) -> Bool {
-        text.contains("\"tool\"") && text.contains("\"arguments\"")
+        if text.contains("\"tool\"") || text.contains("\"arguments\"") { return true }
+        return containsToolPayload(in: text)
+    }
+
+    /// 清理展示文本：移除包含工具参数 JSON 的代码块，避免把原始 JSON 显示给学员
+    static func cleanDisplayText(_ text: String) -> String {
+        let pattern = #"```[a-zA-Z]*\s*[\s\S]*?```"#
+        var result = text
+        if let re = try? NSRegularExpression(pattern: pattern) {
+            let matches = re.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            for match in matches.reversed() {
+                guard let range = Range(match.range, in: result) else { continue }
+                let block = String(result[range])
+                if containsToolPayload(in: block) {
+                    result.removeSubrange(range)
+                }
+            }
+        }
+        // 输出被截断、代码块没有闭合的情况：从最后一个 ``` 起全部移除
+        if let fence = result.range(of: "```", options: .backwards),
+           containsToolPayload(in: String(result[fence.lowerBound...])) {
+            result.removeSubrange(fence.lowerBound...)
+        }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func containsToolPayload(in text: String) -> Bool {
+        ["\"slides\"", "\"questions\"", "\"topics\"", "\"question_count\"", "\"tool\"", "\"arguments\""]
+            .contains { text.contains($0) }
     }
 
     /// 工具调用的简短描述（用于展示）

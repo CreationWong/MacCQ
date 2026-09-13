@@ -6,7 +6,7 @@
 import Foundation
 
 /// 讲解幻灯片（类似 PPT 的一页）
-struct LessonSlide: Identifiable, Decodable {
+struct LessonSlide: Identifiable, Codable {
     let title: String
     let points: [String]
     let example: String?

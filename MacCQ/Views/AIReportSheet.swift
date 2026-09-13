@@ -73,10 +73,7 @@ struct AIReportSheet: View {
             EmptyStateView(icon: "exclamationmark.triangle", title: "分析失败", message: error)
         } else {
             ScrollView {
-                Text(safeMarkdownText(text))
-                    .font(Theme.body)
-                    .textSelection(.enabled)
-                    .lineSpacing(4)
+                MarkdownView(text: text)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(20)
             }

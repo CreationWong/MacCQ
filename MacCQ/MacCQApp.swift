@@ -12,5 +12,8 @@ struct MacCQApp: App {
             MainView()
         }
         .windowResizability(.contentMinSize)
+        .commands {
+            SidebarCommands()
+        }
     }
 }

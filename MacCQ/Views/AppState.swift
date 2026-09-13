@@ -19,6 +19,7 @@ final class AppState {
     var wrongQuestionIds: [Int64] = []
     var favoriteQuestionIds: [Int64] = []
     var notes: [Int64: String] = [:]
+    var keepChatHistory: Bool = true
 
     init() {
         refresh()
@@ -31,6 +32,7 @@ final class AppState {
         wrongQuestionIds = DatabaseManager.shared.loadMarkedIds(kind: "wrong")
         favoriteQuestionIds = DatabaseManager.shared.loadMarkedIds(kind: "favorite")
         notes = DatabaseManager.shared.loadNotes()
+        keepChatHistory = (DatabaseManager.shared.getSetting("keep_chat_history") ?? "1") == "1"
     }
 
     func count(for level: Level) -> Int {
@@ -120,6 +122,53 @@ final class AppState {
     /// 按 ID 顺序加载错题/收藏题目
     func loadQuestions(ids: [Int64]) -> [Question] {
         DatabaseManager.shared.loadQuestions(ids: ids)
+    }
+
+    // MARK: - 对话记录
+
+    func setKeepChatHistory(_ value: Bool) {
+        keepChatHistory = value
+        DatabaseManager.shared.setSetting("keep_chat_history", value: value ? "1" : "0")
+    }
+
+    @discardableResult
+    func createChatSession(title: String) -> Int64 {
+        DatabaseManager.shared.createChatSession(title: title)
+    }
+
+    func loadChatSessions() -> [ChatSession] {
+        guard keepChatHistory else { return [] }
+        return DatabaseManager.shared.loadChatSessions()
+    }
+
+    func renameChatSession(_ id: Int64, title: String) {
+        DatabaseManager.shared.renameChatSession(id: id, title: title)
+    }
+
+    func touchChatSession(_ id: Int64) {
+        DatabaseManager.shared.touchChatSession(id: id)
+    }
+
+    func deleteChatSession(_ id: Int64) {
+        DatabaseManager.shared.deleteChatSession(id: id)
+    }
+
+    func clearChatSession(_ id: Int64) {
+        DatabaseManager.shared.clearChatSession(id: id)
+    }
+
+    func appendChatRecord(_ record: ChatMessageRecord) {
+        guard keepChatHistory else { return }
+        _ = DatabaseManager.shared.appendChatMessage(record)
+    }
+
+    func loadChatRecords(sessionId: Int64) -> [ChatMessageRecord] {
+        guard keepChatHistory else { return [] }
+        return DatabaseManager.shared.loadChatMessages(sessionId: sessionId)
+    }
+
+    func clearChatHistory() {
+        DatabaseManager.shared.clearAllChat()
     }
 }
 

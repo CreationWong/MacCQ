@@ -16,6 +16,7 @@ struct ChatRequest: Codable {
     var model: String
     var messages: [ChatMessage]
     var temperature: Double?
+    var max_tokens: Int?
 }
 
 struct ChatResponse: Codable {
@@ -45,10 +46,10 @@ final class AIService {
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.timeoutInterval = 60
+        req.timeoutInterval = 120
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        let body = ChatRequest(model: config.model, messages: messages, temperature: 0.3)
+        let body = ChatRequest(model: config.model, messages: messages, temperature: 0.3, max_tokens: 4096)
         req.httpBody = try? JSONEncoder().encode(body)
 
         let (data, resp): (Data, URLResponse)

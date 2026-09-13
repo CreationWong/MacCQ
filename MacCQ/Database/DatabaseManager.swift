@@ -85,9 +85,38 @@ final class DatabaseManager {
             note TEXT NOT NULL,
             updated_at REAL NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            api_content TEXT,
+            steps TEXT,
+            artifacts TEXT,
+            created_at REAL NOT NULL,
+            session_id INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
         """)
         // 旧版本数据库升级：为考试记录补充薄弱主题列（列已存在时会报错，忽略即可）
         try? db.exec("ALTER TABLE exam_records ADD COLUMN topics TEXT")
+        // 旧版本对话记录升级：补充会话列并归档到「历史对话」
+        try? db.exec("ALTER TABLE chat_messages ADD COLUMN session_id INTEGER")
+        try? db.exec("""
+        INSERT INTO chat_sessions (title, created_at, updated_at)
+        SELECT '历史对话', MIN(created_at), MAX(created_at)
+        FROM chat_messages WHERE session_id IS NULL HAVING COUNT(*) > 0
+        """)
+        try? db.exec("""
+        UPDATE chat_messages SET session_id = (SELECT MAX(id) FROM chat_sessions)
+        WHERE session_id IS NULL
+        """)
     }
 
     // MARK: - 题库
@@ -290,6 +319,135 @@ final class DatabaseManager {
             }
         } catch { }
         return result
+    }
+
+    // MARK: - 对话记录
+
+    @discardableResult
+    func createChatSession(title: String) -> Int64 {
+        guard let db else { return 0 }
+        let now = Date().timeIntervalSince1970
+        try? db.run(
+            "INSERT INTO chat_sessions (title, created_at, updated_at) VALUES (?, ?, ?)",
+            params: [title, now, now])
+        return db.lastInsertRowID()
+    }
+
+    func loadChatSessions() -> [ChatSession] {
+        guard let db else { return [] }
+        var result: [ChatSession] = []
+        do {
+            let stmt = try db.query(
+                "SELECT id, title, created_at, updated_at FROM chat_sessions ORDER BY updated_at DESC",
+                params: [])
+            defer { stmt.close() }
+            while try stmt.step() {
+                result.append(ChatSession(
+                    id: stmt.int64(0),
+                    title: stmt.text(1),
+                    createdAt: Date(timeIntervalSince1970: stmt.double(2)),
+                    updatedAt: Date(timeIntervalSince1970: stmt.double(3))))
+            }
+        } catch { }
+        return result
+    }
+
+    func renameChatSession(id: Int64, title: String) {
+        guard let db else { return }
+        try? db.run("UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ?",
+                    params: [title, Date().timeIntervalSince1970, id])
+    }
+
+    func touchChatSession(id: Int64) {
+        guard let db else { return }
+        try? db.run("UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+                    params: [Date().timeIntervalSince1970, id])
+    }
+
+    func deleteChatSession(id: Int64) {
+        guard let db else { return }
+        try? db.run("DELETE FROM chat_messages WHERE session_id = ?", params: [id])
+        try? db.run("DELETE FROM chat_sessions WHERE id = ?", params: [id])
+    }
+
+    func clearChatSession(id: Int64) {
+        guard let db else { return }
+        try? db.run("DELETE FROM chat_messages WHERE session_id = ?", params: [id])
+    }
+
+    func clearAllChat() {
+        guard let db else { return }
+        try? db.exec("DELETE FROM chat_messages; DELETE FROM chat_sessions;")
+    }
+
+    @discardableResult
+    func appendChatMessage(_ record: ChatMessageRecord) -> Int64 {
+        guard let db else { return 0 }
+        let steps = (try? JSONEncoder().encode(record.steps))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let artifacts = (try? JSONEncoder().encode(record.artifacts))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        try? db.run("""
+        INSERT INTO chat_messages (session_id, role, content, api_content, steps, artifacts, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            record.sessionId,
+            record.role,
+            record.content,
+            record.apiContent ?? "",
+            steps,
+            artifacts,
+            record.createdAt.timeIntervalSince1970,
+        ])
+        return db.lastInsertRowID()
+    }
+
+    func loadChatMessages(sessionId: Int64) -> [ChatMessageRecord] {
+        guard let db else { return [] }
+        var result: [ChatMessageRecord] = []
+        do {
+            let stmt = try db.query(
+                "SELECT id, role, content, api_content, steps, artifacts, created_at FROM chat_messages WHERE session_id = ? ORDER BY id ASC",
+                params: [sessionId])
+            defer { stmt.close() }
+            while try stmt.step() {
+                let apiContent = stmt.text(3)
+                let steps = (try? JSONDecoder().decode([AgentStep].self, from: Data(stmt.text(4).utf8))) ?? []
+                let artifacts = (try? JSONDecoder().decode([StoredArtifact].self, from: Data(stmt.text(5).utf8))) ?? []
+                result.append(ChatMessageRecord(
+                    id: stmt.int64(0),
+                    role: stmt.text(1),
+                    content: stmt.text(2),
+                    apiContent: apiContent.isEmpty ? nil : apiContent,
+                    steps: steps,
+                    artifacts: artifacts,
+                    createdAt: Date(timeIntervalSince1970: stmt.double(6)),
+                    sessionId: sessionId))
+            }
+        } catch { }
+        return result
+    }
+
+    // MARK: - 通用设置
+
+    func getSetting(_ key: String) -> String? {
+        guard let db else { return nil }
+        do {
+            let stmt = try db.query("SELECT value FROM settings WHERE key = ?", params: [key])
+            defer { stmt.close() }
+            if try stmt.step() {
+                return stmt.text(0)
+            }
+        } catch { }
+        return nil
+    }
+
+    func setSetting(_ key: String, value: String) {
+        guard let db else { return }
+        try? db.run("""
+        INSERT INTO settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """, params: [key, value])
     }
 
     // MARK: - 考试记录

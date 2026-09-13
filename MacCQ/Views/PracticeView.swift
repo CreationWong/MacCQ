@@ -55,20 +55,24 @@ struct PracticeView: View {
         }
         .pageBackground()
         .navigationTitle("练习 · \(level.name)")
-        .toolbar {
-            ToolbarItemGroup {
+        .toolbar(id: "practice-toolbar") {
+            ToolbarItem(id: "explain", placement: .primaryAction) {
                 Button {
                     showExplain = true
                 } label: {
                     Label("AI 讲解", systemImage: "sparkles")
                 }
+                .help("AI 讲解本题")
                 .disabled(questions.isEmpty)
+            }
 
+            ToolbarItem(id: "summary", placement: .primaryAction) {
                 Button {
                     showSummary = true
                 } label: {
                     Label("练习小结", systemImage: "chart.bar.xaxis")
                 }
+                .help("练习小结")
                 .disabled(wrongQuestions.isEmpty)
             }
         }

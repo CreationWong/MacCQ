@@ -628,10 +628,7 @@ struct TrainingSessionView: View {
             Label("解析", systemImage: "lightbulb")
                 .font(Theme.sectionTitle)
                 .foregroundStyle(Theme.accent)
-            Text(safeMarkdownText(text))
-                .font(Theme.body)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            MarkdownView(text: text)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .card(padding: 20)

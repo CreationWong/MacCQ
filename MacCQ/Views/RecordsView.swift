@@ -36,10 +36,13 @@ struct RecordsView: View {
         }
         .pageBackground()
         .navigationTitle("成绩记录")
-        .toolbar {
+        .toolbar(id: "records-toolbar") {
             if !appState.records.isEmpty {
-                Button(role: .destructive) { showClearConfirm = true } label: {
-                    Label("清空", systemImage: "trash")
+                ToolbarItem(id: "clear-records", placement: .primaryAction) {
+                    Button(role: .destructive) { showClearConfirm = true } label: {
+                        Label("清空", systemImage: "trash")
+                    }
+                    .help("清空成绩记录")
                 }
             }
         }

@@ -121,11 +121,7 @@ struct PracticeSummarySheet: View {
             EmptyStateView(icon: "exclamationmark.triangle", title: "分析失败", message: error)
                 .frame(minHeight: 320)
         } else {
-            Text(safeMarkdownText(aiText))
-                .font(Theme.body)
-                .textSelection(.enabled)
-                .lineSpacing(4)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            MarkdownView(text: aiText)
         }
     }
 

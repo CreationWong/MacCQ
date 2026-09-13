@@ -61,19 +61,23 @@ struct NotebookView: View {
         }
         .pageBackground()
         .navigationTitle("错题本与收藏")
-        .toolbar {
+        .toolbar(id: "notebook-toolbar") {
             if !questions.isEmpty {
-                ToolbarItemGroup {
+                ToolbarItem(id: "review", placement: .primaryAction) {
                     Button {
                         startReview()
                     } label: {
                         Label("复习全部", systemImage: "play.circle")
                     }
+                    .help("复习全部")
+                }
+                ToolbarItem(id: "clear-marks", placement: .primaryAction) {
                     Button(role: .destructive) {
                         showClearConfirm = true
                     } label: {
                         Label("清空", systemImage: "trash")
                     }
+                    .help("清空")
                 }
             }
         }

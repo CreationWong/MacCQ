@@ -8,7 +8,7 @@
 import Foundation
 
 /// 试卷中的一道题：选项顺序已打乱，正确索引指向打乱后的选项
-struct ExamQuestion: Identifiable, Hashable {
+struct ExamQuestion: Identifiable, Hashable, Codable {
     let id: Int64
     let level: String
     let type: QuestionType

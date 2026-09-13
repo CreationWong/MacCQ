@@ -11,11 +11,13 @@ struct SettingsView: View {
     @State private var apiKey = ""
     @State private var model = ""
     @State private var saved = false
+    @State private var showClearChatConfirm = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 aiSection
+                chatSection
                 bankSection
                 privacyNote
             }
@@ -67,8 +69,38 @@ struct SettingsView: View {
         .card(padding: 20)
     }
 
-    private var bankSection: some View {
+    private var chatSection: some View {
         VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("对话记录").font(Theme.sectionTitle)
+                Text("保留与 AI 的对话，下次打开可以接着看；关闭后不再保存新的对话。")
+                    .font(Theme.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Toggle("保留对话记录", isOn: Binding(
+                get: { appState.keepChatHistory },
+                set: { appState.setKeepChatHistory($0) }))
+                .toggleStyle(.switch)
+
+            HStack {
+                Button("清除对话记录", role: .destructive) {
+                    showClearChatConfirm = true
+                }
+                .buttonStyle(SecondaryActionButton())
+                Spacer()
+            }
+        }
+        .card(padding: 20)
+        .confirmationDialog("确定清除全部对话记录吗？", isPresented: $showClearChatConfirm, titleVisibility: .visible) {
+            Button("清除", role: .destructive) {
+                appState.clearChatHistory()
+            }
+            Button("取消", role: .cancel) {}
+        }
+    }
+
+    private var bankSection: some View {        VStack(alignment: .leading, spacing: 14) {
             Text("题库总览").font(Theme.sectionTitle)
 
             VStack(spacing: 0) {

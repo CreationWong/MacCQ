@@ -5,28 +5,6 @@
 
 import SwiftUI
 
-/// 安全渲染 Markdown：保留常见排版（粗体/斜体/代码/列表），
-/// 但移除超链接与远程图片，防止渲染层注入（点击跳转、追踪外链、加载恶意资源）。
-func safeMarkdownText(_ text: String) -> AttributedString {
-    guard !text.isEmpty else { return AttributedString(text) }
-    let options = AttributedString.MarkdownParsingOptions(
-        interpretedSyntax: .full,
-        failurePolicy: .returnPartiallyParsedIfPossible)
-    guard let parsed = try? AttributedString(markdown: text, options: options) else {
-        return AttributedString(text)
-    }
-    var result = AttributedString()
-    for run in parsed.runs {
-        var attrs = run.attributes
-        attrs.link = nil
-        attrs.imageURL = nil
-        var sub = parsed[run.range]
-        sub.setAttributes(attrs)
-        result.append(sub)
-    }
-    return result
-}
-
 /// 全局视觉风格：克制的配色、统一的间距与字体、简洁的组件。
 /// 遵循系统浅色/深色外观自动适配。
 enum Theme {

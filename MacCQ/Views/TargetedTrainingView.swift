@@ -234,10 +234,7 @@ struct TargetedTrainingView: View {
                             Label("解析", systemImage: "lightbulb")
                                 .font(Theme.sectionTitle)
                                 .foregroundStyle(Theme.accent)
-                            Text(safeMarkdownText(explanation))
-                                .font(Theme.body)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
+                            MarkdownView(text: explanation)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .card(padding: 20)

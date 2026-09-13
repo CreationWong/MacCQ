@@ -13,6 +13,33 @@ private struct TutorMessage: Identifiable {
     var apiContent: String?
     var steps: [AgentStep] = []
     var artifacts: [ChatArtifact] = []
+
+    init(role: String, content: String, apiContent: String? = nil,
+         steps: [AgentStep] = [], artifacts: [ChatArtifact] = []) {
+        self.role = role
+        self.content = content
+        self.apiContent = apiContent
+        self.steps = steps
+        self.artifacts = artifacts
+    }
+
+    init(record: ChatMessageRecord) {
+        self.init(
+            role: record.role,
+            content: record.content,
+            apiContent: record.apiContent,
+            steps: record.steps,
+            artifacts: record.artifacts.compactMap { $0.artifact })
+    }
+
+    var record: ChatMessageRecord {
+        ChatMessageRecord(
+            role: role,
+            content: content,
+            apiContent: apiContent,
+            steps: steps,
+            artifacts: artifacts.map { StoredArtifact($0) })
+    }
 }
 
 /// 打开训练会话的请求
@@ -44,9 +71,15 @@ struct AIView: View {
 
     // 由 AI 工具创建的训练
     @State private var session: TrainingSessionRequest?
+    @State private var showClearChatConfirm = false
+
+    // 对话记录
+    @State private var sessions: [ChatSession] = []
+    @State private var currentSessionId: Int64?
+    @State private var showHistory = false
 
     var body: some View {
-        Group {
+        ZStack {
             if let session {
                 TrainingSessionView(artifacts: session.artifacts) {
                     self.session = nil
@@ -57,19 +90,167 @@ struct AIView: View {
         }
         .pageBackground()
         .navigationTitle("AI 助教")
-        .onAppear { loadBank() }
+        .toolbar(id: "ai-toolbar") {
+            if appState.keepChatHistory {
+                ToolbarItem(id: "history", placement: .primaryAction) {
+                    Button {
+                        showHistory = true
+                    } label: {
+                        Label("对话记录", systemImage: "clock.arrow.circlepath")
+                    }
+                    .help("对话记录")
+                    .popover(isPresented: $showHistory, arrowEdge: .bottom) {
+                        historyPopover
+                    }
+                }
+            }
+            if !messages.isEmpty {
+                ToolbarItem(id: "clear-chat", placement: .primaryAction) {
+                    Button(role: .destructive) {
+                        showClearChatConfirm = true
+                    } label: {
+                        Label("清空对话", systemImage: "trash")
+                    }
+                    .help("清空当前对话")
+                }
+            }
+        }
+        .confirmationDialog("确定清空当前对话吗？", isPresented: $showClearChatConfirm, titleVisibility: .visible) {
+            Button("清空", role: .destructive) {
+                if let id = currentSessionId {
+                    appState.clearChatSession(id)
+                }
+                messages = []
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .onAppear {
+            loadBank()
+            loadHistory()
+        }
+    }
+
+    // MARK: - 对话记录
+
+    private var historyPopover: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                newConversation()
+            } label: {
+                Label("新建对话", systemImage: "plus")
+                    .font(Theme.font(13, .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+
+            Divider().overlay(Theme.separator)
+
+            if sessions.isEmpty {
+                Text("暂无对话记录")
+                    .font(Theme.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(24)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(sessions) { item in
+                            sessionRow(item)
+                        }
+                    }
+                    .padding(6)
+                }
+            }
+        }
+        .frame(width: 300, height: 340)
+    }
+
+    private func sessionRow(_ item: ChatSession) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                selectSession(item)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: item.id == currentSessionId ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 13))
+                        .foregroundStyle(item.id == currentSessionId ? Theme.accent : Color.secondary.opacity(0.5))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title)
+                            .font(Theme.font(13))
+                            .lineLimit(1)
+                        Text(item.updatedAt.formatted(.dateTime.month().day().hour().minute()))
+                            .font(Theme.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                deleteSession(item)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("删除对话")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            item.id == currentSessionId ? Theme.accent.opacity(0.08) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func newConversation() {
+        messages = []
+        showHistory = false
+        guard appState.keepChatHistory else {
+            currentSessionId = nil
+            return
+        }
+        currentSessionId = appState.createChatSession(title: "新对话")
+        sessions = appState.loadChatSessions()
+    }
+
+    private func selectSession(_ item: ChatSession) {
+        currentSessionId = item.id
+        messages = appState.loadChatRecords(sessionId: item.id).map(TutorMessage.init(record:))
+        showHistory = false
+    }
+
+    private func deleteSession(_ item: ChatSession) {
+        appState.deleteChatSession(item.id)
+        sessions = appState.loadChatSessions()
+        guard currentSessionId == item.id else { return }
+        currentSessionId = sessions.first?.id
+        if let id = currentSessionId {
+            messages = appState.loadChatRecords(sessionId: id).map(TutorMessage.init(record:))
+        } else {
+            messages = []
+        }
     }
 
     private var normalContent: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $mode) {
-                ForEach(Mode.allCases) { m in
-                    Text(m.rawValue).tag(m)
+            HStack(spacing: 12) {
+                Picker("", selection: $mode) {
+                    ForEach(Mode.allCases) { m in
+                        Text(m.rawValue).tag(m)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 320)
+
+                Spacer()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 320)
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
 
@@ -149,7 +330,7 @@ struct AIView: View {
             if isUser {
                 HStack {
                     Spacer(minLength: 60)
-                    Text(safeMarkdownText(m.content))
+                    Text(m.content)
                         .font(Theme.body)
                         .textSelection(.enabled)
                         .padding(.horizontal, 14)
@@ -165,9 +346,7 @@ struct AIView: View {
                         agentSteps(m.steps)
                     }
                     if !m.content.isEmpty {
-                        Text(safeMarkdownText(m.content))
-                            .font(Theme.body)
-                            .textSelection(.enabled)
+                        MarkdownView(text: m.content)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
                             .background(
@@ -362,7 +541,7 @@ struct AIView: View {
             query: trimmed, references: references, notes: appState.notes)
 
         let history = messages.map { ChatMessage(role: $0.role, content: $0.apiContent ?? $0.content) }
-        messages.append(TutorMessage(role: "user", content: trimmed, apiContent: enriched))
+        appendMessage(TutorMessage(role: "user", content: trimmed, apiContent: enriched))
         input = ""
         referenced = []
         errorMessage = nil
@@ -378,7 +557,7 @@ struct AIView: View {
                     userMessage: enriched,
                     systemPrompt: systemPrompt,
                     context: context)
-                messages.append(TutorMessage(
+                appendMessage(TutorMessage(
                     role: "assistant",
                     content: result.text,
                     steps: result.steps,
@@ -388,6 +567,53 @@ struct AIView: View {
             }
             isLoading = false
         }
+    }
+
+    /// 追加消息并按设置持久化到当前对话
+    private func appendMessage(_ message: TutorMessage) {
+        messages.append(message)
+        guard appState.keepChatHistory else { return }
+
+        if currentSessionId == nil {
+            let title = message.role == "user" ? sessionTitle(from: message.content) : "新对话"
+            currentSessionId = appState.createChatSession(title: title)
+            sessions = appState.loadChatSessions()
+        }
+
+        guard let sessionId = currentSessionId else { return }
+        var record = message.record
+        record.sessionId = sessionId
+        appState.appendChatRecord(record)
+        appState.touchChatSession(sessionId)
+
+        // 首条用户消息用于命名对话
+        if message.role == "user",
+           let session = sessions.first(where: { $0.id == sessionId }),
+           session.title == "新对话" {
+            appState.renameChatSession(sessionId, title: sessionTitle(from: message.content))
+            sessions = appState.loadChatSessions()
+        }
+    }
+
+    private func sessionTitle(from text: String) -> String {
+        let cleaned = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty { return "新对话" }
+        return String(cleaned.prefix(16))
+    }
+
+    private func loadHistory() {
+        guard appState.keepChatHistory else { return }
+        sessions = appState.loadChatSessions()
+        if currentSessionId == nil {
+            currentSessionId = sessions.first?.id
+        }
+        guard let id = currentSessionId else {
+            messages = []
+            return
+        }
+        messages = appState.loadChatRecords(sessionId: id).map(TutorMessage.init(record:))
     }
 
     // MARK: - 学员数据
